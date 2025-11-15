@@ -1,0 +1,5 @@
+{
+  "name": "CMS | Relatório de Horas | RD",
+  "description": "Um aplicativo para gerenciar e controlar as horas diárias dedicadas a cada projeto, com relatórios e exportação de dados.",
+  "requestFramePermissions": []
+}
