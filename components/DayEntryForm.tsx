@@ -1,9 +1,10 @@
 import React, { useState, useMemo, useCallback } from 'react';
 import type { DailyEntry, Project, ProjectTimeAllocation } from '../types';
-import { Plus, Trash2 } from 'lucide-react';
+import { Plus, Trash2, Mic } from 'lucide-react';
 import { parse, differenceInMinutes } from 'date-fns';
 import { decimalHoursToHHMM, hhmmToDecimalHours } from '../utils/formatters';
 import ClientProjectSelector from './ClientProjectSelector';
+import VoiceCommandModal from './VoiceCommandModal';
 
 interface DayEntryFormProps {
   initialEntry: DailyEntry | null;
@@ -26,6 +27,7 @@ const DayEntryForm: React.FC<DayEntryFormProps> = ({ initialEntry, onSave, onDel
   });
   const [projectAllocations, setProjectAllocations] = useState<ProjectTimeAllocation[]>(initialEntry?.projectAllocations || []);
   const [isProjectSelectorOpen, setIsProjectSelectorOpen] = useState(false);
+  const [isVoiceModalOpen, setIsVoiceModalOpen] = useState(false);
 
   const projectsById = useMemo(() => {
     return projects.reduce((acc, p) => {
@@ -85,12 +87,36 @@ const DayEntryForm: React.FC<DayEntryFormProps> = ({ initialEntry, onSave, onDel
   const handleSaveClick = () => {
     onSave({ ...shifts, projectAllocations });
   };
+  
+  const handleVoiceData = (data: Partial<DailyEntry>) => {
+    if (data.morning || data.afternoon || data.evening) {
+      setShifts(prev => ({
+        morning: data.morning || prev.morning,
+        afternoon: data.afternoon || prev.afternoon,
+        evening: data.evening || prev.evening,
+      }));
+    }
+
+    if (data.projectAllocations && data.projectAllocations.length > 0) {
+        setProjectAllocations(data.projectAllocations);
+    }
+  };
 
   return (
     <>
       <div className="p-4 space-y-6">
         <div className="bg-gray-100 dark:bg-gray-700 p-4 rounded-lg space-y-4">
-          <h2 className="text-lg font-semibold">Horas Trabalhadas</h2>
+          <div className="flex justify-between items-center">
+             <h2 className="text-lg font-semibold">Horas Trabalhadas</h2>
+             <button 
+                onClick={() => setIsVoiceModalOpen(true)}
+                className="flex items-center gap-2 px-3 py-1.5 text-sm bg-orange-600 text-white rounded-md hover:bg-orange-500 transition-colors"
+                title="Preencher com comando de voz"
+            >
+                <Mic size={16} />
+                Voz
+            </button>
+          </div>
           {Object.entries(shifts).map(([key, value]) => (
             <div key={key} className="grid grid-cols-2 gap-4 items-center">
               <label className="text-gray-700 dark:text-gray-300">{SHIFT_NAMES[key as keyof typeof SHIFT_NAMES]}</label>
@@ -173,6 +199,12 @@ const DayEntryForm: React.FC<DayEntryFormProps> = ({ initialEntry, onSave, onDel
         projects={projects}
         onSelectProject={handleAddProject}
         allocatedProjectIds={projectAllocations.map(p => p.projectId)}
+      />
+       <VoiceCommandModal
+        isOpen={isVoiceModalOpen}
+        onClose={() => setIsVoiceModalOpen(false)}
+        projects={projects}
+        onComplete={handleVoiceData}
       />
     </>
   );
