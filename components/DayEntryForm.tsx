@@ -1,6 +1,7 @@
+
 import React, { useState, useMemo, useCallback } from 'react';
 import type { DailyEntry, Project, ProjectTimeAllocation } from '../types';
-import { Plus, Trash2, Mic } from 'lucide-react';
+import { Plus, Trash2, Mic, Copy } from 'lucide-react';
 import { parse, differenceInMinutes } from 'date-fns';
 import { decimalHoursToHHMM, hhmmToDecimalHours } from '../utils/formatters';
 import ClientProjectSelector from './ClientProjectSelector';
@@ -11,11 +12,12 @@ interface DayEntryFormProps {
   onSave: (entry: DailyEntry) => void;
   onDelete: () => void;
   projects: Project[];
+  previousEntry: DailyEntry | null;
 }
 
 const SHIFT_NAMES = { morning: 'Manhã', afternoon: 'Tarde', evening: 'Noite' };
 
-const DayEntryForm: React.FC<DayEntryFormProps> = ({ initialEntry, onSave, onDelete, projects }) => {
+const DayEntryForm: React.FC<DayEntryFormProps> = ({ initialEntry, onSave, onDelete, projects, previousEntry }) => {
   const [shifts, setShifts] = useState(initialEntry ? {
     morning: initialEntry.morning,
     afternoon: initialEntry.afternoon,
@@ -101,21 +103,45 @@ const DayEntryForm: React.FC<DayEntryFormProps> = ({ initialEntry, onSave, onDel
         setProjectAllocations(data.projectAllocations);
     }
   };
+  
+  const handleCopyPreviousDay = () => {
+      if (!previousEntry) return;
+      if (window.confirm("Deseja copiar o preenchimento do dia anterior? Isso substituirá os dados atuais.")) {
+          setShifts({
+              morning: { ...previousEntry.morning },
+              afternoon: { ...previousEntry.afternoon },
+              evening: { ...previousEntry.evening }
+          });
+          setProjectAllocations([...previousEntry.projectAllocations]);
+      }
+  };
 
   return (
     <>
       <div className="p-4 space-y-6">
         <div className="bg-gray-100 dark:bg-gray-700 p-4 rounded-lg space-y-4">
-          <div className="flex justify-between items-center">
+          <div className="flex justify-between items-center flex-wrap gap-2">
              <h2 className="text-lg font-semibold">Horas Trabalhadas</h2>
-             <button 
-                onClick={() => setIsVoiceModalOpen(true)}
-                className="flex items-center gap-2 px-3 py-1.5 text-sm bg-orange-600 text-white rounded-md hover:bg-orange-500 transition-colors"
-                title="Preencher com comando de voz"
-            >
-                <Mic size={16} />
-                Voz
-            </button>
+             <div className="flex gap-2">
+                {previousEntry && (
+                    <button 
+                        onClick={handleCopyPreviousDay}
+                        className="flex items-center gap-2 px-3 py-1.5 text-xs font-medium bg-gray-200 dark:bg-gray-600 text-gray-800 dark:text-white rounded-md hover:bg-gray-300 dark:hover:bg-gray-500 transition-colors"
+                        title="Copiar do dia anterior"
+                    >
+                        <Copy size={14} />
+                        Repetir Anterior
+                    </button>
+                )}
+                <button 
+                    onClick={() => setIsVoiceModalOpen(true)}
+                    className="flex items-center gap-2 px-3 py-1.5 text-sm bg-orange-600 text-white rounded-md hover:bg-orange-500 transition-colors"
+                    title="Preencher com comando de voz"
+                >
+                    <Mic size={16} />
+                    Voz
+                </button>
+             </div>
           </div>
           {Object.entries(shifts).map(([key, value]) => (
             <div key={key} className="grid grid-cols-2 gap-4 items-center">

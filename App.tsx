@@ -1,3 +1,4 @@
+
 import React, { useState, useMemo, useEffect, useCallback } from 'react';
 import { 
   format, subDays, startOfMonth, endOfMonth, 
@@ -8,7 +9,7 @@ import { ptBR } from 'date-fns/locale';
 import { utils, read } from 'xlsx';
 
 import useLocalStorage from './hooks/useLocalStorage';
-import type { Project, AllAllocations, View, DailyEntry } from './types';
+import type { Project, AllAllocations, View, DailyEntry, User } from './types';
 import Header from './components/Header';
 import BottomNav from './components/BottomNav';
 import Modal from './components/Modal';
@@ -17,10 +18,11 @@ import ProjectList from './components/ProjectList';
 import ReportView from './components/ReportView';
 import DayEntryForm from './components/DayEntryForm';
 import { decimalHoursToHHMM } from './utils/formatters';
+import LoginScreen from './components/LoginScreen';
 
 
 // Icons from lucide-react
-import { Plus, AlertTriangle, ArrowLeft, Sun, Moon } from 'lucide-react';
+import { Plus, AlertTriangle, ArrowLeft, Sun, Moon, LogOut } from 'lucide-react';
 
 interface MonthlyStats {
     totalHours: number;
@@ -29,12 +31,12 @@ interface MonthlyStats {
 
 type Theme = 'light' | 'dark';
 
-const App: React.FC = () => {
+const MainApp: React.FC<{ user: User; onLogout: () => void }> = ({ user, onLogout }) => {
   const [activeView, setActiveView] = useState<View>('timesheet');
-  const [projects, setProjects] = useLocalStorage<Project[]>('projects', []);
-  const [allocations, setAllocations] = useLocalStorage<AllAllocations>('allocations', {});
-  const [email, setEmail] = useLocalStorage<string>('user_email', '');
-  const [theme, setTheme] = useLocalStorage<Theme>('theme', 'dark');
+  const [projects, setProjects] = useLocalStorage<Project[]>(`${user.id}_projects`, []);
+  const [allocations, setAllocations] = useLocalStorage<AllAllocations>(`${user.id}_allocations`, {});
+  const [email, setEmail] = useLocalStorage<string>(`${user.id}_user_email`, '');
+  const [theme, setTheme] = useLocalStorage<Theme>(`${user.id}_theme`, 'dark');
 
   const [isProjectFormOpen, setIsProjectFormOpen] = useState(false);
   const [projectToEdit, setProjectToEdit] = useState<Project | null>(null);
@@ -154,6 +156,13 @@ const App: React.FC = () => {
 
   const dateKey = useMemo(() => selectedDay ? format(selectedDay, 'yyyy-MM-dd') : '', [selectedDay]);
   
+  const previousEntry = useMemo(() => {
+      if (!selectedDay) return null;
+      const prevDay = subDays(selectedDay, 1);
+      const prevKey = format(prevDay, 'yyyy-MM-dd');
+      return allocations[prevKey] || null;
+  }, [selectedDay, allocations]);
+
   const handleSaveDailyEntry = (entry: DailyEntry) => {
     if (!dateKey) return;
     setAllocations(prev => ({
@@ -254,6 +263,16 @@ const App: React.FC = () => {
           <div className="p-4 space-y-6">
             <h1 className="text-2xl font-bold">Ajustes</h1>
             <div className="bg-gray-100 dark:bg-gray-700 p-4 rounded-lg">
+                <h2 className="text-lg font-semibold mb-2">Usuário Atual</h2>
+                <p className="mb-4 text-gray-700 dark:text-gray-300">Você está logado como <span className="font-bold">{user.name}</span>.</p>
+                <button 
+                  onClick={onLogout}
+                  className="w-full px-4 py-2 bg-gray-500 text-white rounded-md hover:bg-gray-600 transition-colors flex items-center justify-center gap-2"
+                >
+                  <LogOut size={16}/> Sair / Trocar Usuário
+                </button>
+            </div>
+            <div className="bg-gray-100 dark:bg-gray-700 p-4 rounded-lg">
                 <label htmlFor="email" className="block text-sm font-medium text-gray-700 dark:text-gray-300">Email para Exportação</label>
                 <input
                   type="email"
@@ -295,6 +314,7 @@ const App: React.FC = () => {
                 onSave={handleSaveDailyEntry}
                 onDelete={handleDeleteDailyEntry}
                 projects={projects}
+                previousEntry={previousEntry}
               />
             </div>
           );
@@ -374,7 +394,7 @@ const App: React.FC = () => {
 
   return (
     <div className="pb-20 pt-16">
-      <Header />
+      <Header userName={user.name} />
       {renderContent()}
       <BottomNav activeView={activeView} setActiveView={setActiveView} />
       
@@ -411,5 +431,29 @@ const App: React.FC = () => {
     </div>
   );
 };
+
+const App: React.FC = () => {
+  const [users, setUsers] = useLocalStorage<User[]>('app_users', []);
+  const [currentUserId, setCurrentUserId] = useLocalStorage<string | null>('app_currentUserId', null);
+  
+  const currentUser = useMemo(() => users.find(u => u.id === currentUserId), [users, currentUserId]);
+
+  const handleLogin = (userId: string) => {
+      setCurrentUserId(userId);
+  };
+
+  const handleCreateUser = (name: string, password: string) => {
+      const newUser: User = { id: new Date().toISOString(), name, password };
+      setUsers(prev => [...prev, newUser]);
+      setCurrentUserId(newUser.id);
+  };
+
+  if (!currentUser) {
+      return <LoginScreen users={users} onLogin={handleLogin} onCreateUser={handleCreateUser} />;
+  }
+
+  return <MainApp key={currentUser.id} user={currentUser} onLogout={() => setCurrentUserId(null)} />;
+};
+
 
 export default App;

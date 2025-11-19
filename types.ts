@@ -1,3 +1,4 @@
+
 export interface Project {
   id: string;
   name: string;
@@ -34,3 +35,9 @@ export type AllAllocations = {
 
 
 export type View = 'timesheet' | 'projects' | 'reports' | 'settings';
+
+export interface User {
+  id: string;
+  name: string;
+  password?: string; // Senha opcional para suportar usuários antigos, mas obrigatória para novos
+}
