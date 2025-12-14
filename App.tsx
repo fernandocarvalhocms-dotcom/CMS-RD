@@ -1,9 +1,8 @@
-
 import React, { useState, useMemo, useEffect, useCallback } from 'react';
 import { 
   format, subDays, startOfMonth, endOfMonth, 
   eachDayOfInterval, startOfWeek, endOfWeek, isSameMonth, 
-  isToday, subMonths, addMonths, parse, differenceInMinutes
+  isToday, subMonths, addMonths, parse, differenceInMinutes, addDays
 } from 'date-fns';
 import { ptBR } from 'date-fns/locale';
 import { utils, read } from 'xlsx';
@@ -36,7 +35,9 @@ const MainApp: React.FC<{ user: User; onLogout: () => void }> = ({ user, onLogou
   const [projects, setProjects] = useLocalStorage<Project[]>(`${user.id}_projects`, []);
   const [allocations, setAllocations] = useLocalStorage<AllAllocations>(`${user.id}_allocations`, {});
   const [email, setEmail] = useLocalStorage<string>(`${user.id}_user_email`, '');
-  const [theme, setTheme] = useLocalStorage<Theme>(`${user.id}_theme`, 'dark');
+  
+  // Default theme changed to 'light'
+  const [theme, setTheme] = useLocalStorage<Theme>(`${user.id}_theme`, 'light');
 
   const [isProjectFormOpen, setIsProjectFormOpen] = useState(false);
   const [projectToEdit, setProjectToEdit] = useState<Project | null>(null);
@@ -79,16 +80,27 @@ const MainApp: React.FC<{ user: User; onLogout: () => void }> = ({ user, onLogou
   };
 
   const handleDeleteProject = (projectId: string) => {
-    setProjects(prev => prev.filter(p => p.id !== projectId));
-    // Also remove allocations for this project
-    const newAllocations: AllAllocations = {};
-    for (const date in allocations) {
-        newAllocations[date] = {
-            ...allocations[date],
-            projectAllocations: allocations[date].projectAllocations.filter(pa => pa.projectId !== projectId)
-        };
-    }
-    setAllocations(newAllocations);
+    // Robust update: Filter creates a new array reference
+    setProjects(prevProjects => {
+        const updatedProjects = prevProjects.filter(p => p.id !== projectId);
+        return updatedProjects;
+    });
+
+    // Also remove allocations for this project to maintain consistency
+    setAllocations(prevAllocations => {
+        const newAllocations: AllAllocations = {};
+        Object.keys(prevAllocations).forEach(date => {
+            const entry = prevAllocations[date];
+            const newProjectAllocations = entry.projectAllocations.filter(pa => pa.projectId !== projectId);
+            
+            // Only keep the day if it still has data or shifts, otherwise update just the allocations
+            newAllocations[date] = {
+                ...entry,
+                projectAllocations: newProjectAllocations
+            };
+        });
+        return newAllocations;
+    });
   };
 
   const handleDeleteAllProjects = () => {
@@ -109,46 +121,61 @@ const MainApp: React.FC<{ user: User; onLogout: () => void }> = ({ user, onLogou
     setIsProjectFormOpen(true);
   };
 
+  const generateStableId = (name: string, client: string) => {
+    // Cria um ID baseado no nome e cliente para que re-sincronizações não percam o vínculo com as horas já lançadas
+    try {
+        const str = `${name.trim().toLowerCase()}-${client.trim().toLowerCase()}`;
+        // Simples hash numérico ou string limpa
+        return btoa(unescape(encodeURIComponent(str))).replace(/[^a-zA-Z0-9]/g, '').substring(0, 32);
+    } catch (e) {
+        return `proj-${Date.now()}-${Math.random()}`;
+    }
+  };
+
   const handleImportProjects = (file: File) => {
     if (!file) return;
     const reader = new FileReader();
     reader.onload = (event) => {
       try {
         const data = event.target?.result;
+        // Importante: read com type: array detecta melhor a codificação
         const workbook = read(data, { type: 'array' });
         const sheetName = workbook.SheetNames[0];
         const worksheet = workbook.Sheets[sheetName];
         const rows = utils.sheet_to_json<any[]>(worksheet, { header: 1 });
 
         if (rows.length < 2) {
-            alert("O arquivo Excel está vazio ou não contém dados de projeto.");
+            alert("O arquivo está vazio ou não contém dados de projeto.");
             return;
         }
 
         const importedProjects: Project[] = rows
           .slice(1)
           .filter(row => row && row.length >= 4 && row[0] && row[1] && row[2] && row[3])
-          .map((row, index) => ({
-            id: `imported-${new Date().getTime()}-${index}`,
-            code: String(row[0]),
-            accountingId: String(row[1]),
-            name: String(row[2]),
-            client: String(row[3]),
-            status: 'active',
-          }));
+          .map((row) => {
+            const client = String(row[2]).trim(); 
+            const name = String(row[3]).trim(); 
+            
+            return {
+                id: generateStableId(name, client),
+                code: String(row[0]).trim(),
+                accountingId: String(row[1]).trim(),
+                name: name,
+                client: client,
+                status: 'active',
+            };
+          });
 
         if (importedProjects.length > 0) {
-          const existingCodes = new Set(projects.map(p => p.code));
-          const newUniqueProjects = importedProjects.filter(p => !existingCodes.has(p.code));
+           setProjects(importedProjects);
+           alert(`Lista de projetos ATUALIZADA com sucesso!\n\nForam carregados ${importedProjects.length} projetos.\nOs projetos anteriores foram removidos da visualização.`);
           
-          setProjects(prev => [...prev, ...newUniqueProjects]);
-          alert(`${newUniqueProjects.length} novos projetos importados com sucesso! (${importedProjects.length - newUniqueProjects.length} duplicados foram ignorados).`);
         } else {
-          alert("Nenhum projeto válido encontrado no arquivo. Verifique se o arquivo possui dados nas quatro primeiras colunas na ordem correta: Centro de custo, ID contabil, Projeto, cliente.");
+          alert("Nenhum projeto válido encontrado. Verifique as colunas: Centro de custo, ID contabil, Projeto, cliente.");
         }
       } catch (error) {
         console.error("Erro ao importar arquivo:", error);
-        alert("Ocorreu um erro ao ler o arquivo. Verifique se o formato está correto e não está corrompido.");
+        alert("Ocorreu um erro ao ler o arquivo.");
       }
     };
     reader.readAsArrayBuffer(file);
@@ -172,16 +199,37 @@ const MainApp: React.FC<{ user: User; onLogout: () => void }> = ({ user, onLogou
     setSelectedDay(null); // Go back to calendar view after saving
   };
 
+  // UPDATED: Now accepts an array of Dates instead of a number
+  const handleReplicateDailyEntry = (entry: DailyEntry, targetDates: Date[]) => {
+      if (!selectedDay || targetDates.length === 0) return;
+      
+      setAllocations(prev => {
+          const newAllocations = { ...prev };
+          targetDates.forEach(date => {
+              const key = format(date, 'yyyy-MM-dd');
+              newAllocations[key] = entry;
+          });
+          return newAllocations;
+      });
+      
+      alert(`Apontamento replicado com sucesso para ${targetDates.length} dias!`);
+      setSelectedDay(null); // Return to calendar
+  };
+
   const handleDeleteDailyEntry = () => {
     if (!dateKey) return;
-     if (window.confirm('Tem certeza que deseja apagar todos os lançamentos para este dia?')) {
-        setAllocations(prev => {
-            const newAllocations = { ...prev };
+    
+    // Direct manipulation and state set ensures update
+    setAllocations(prev => {
+        const newAllocations = { ...prev };
+        // Deleta se existir, senão só ignora
+        if (newAllocations[dateKey]) {
             delete newAllocations[dateKey];
-            return newAllocations;
-        });
-        setSelectedDay(null); // Go back to calendar view
-    }
+        }
+        return newAllocations;
+    });
+    
+    setSelectedDay(null); // Return to calendar immediately
   };
   
   const projectsById = useMemo(() => {
@@ -257,7 +305,7 @@ const MainApp: React.FC<{ user: User; onLogout: () => void }> = ({ user, onLogou
           </div>
         );
       case 'reports':
-        return <ReportView projects={projects} allocations={allocations} theme={theme} />;
+        return <ReportView projects={projects} allocations={allocations} theme={theme} userName={user.name} />;
       case 'settings':
         return (
           <div className="p-4 space-y-6">
@@ -312,6 +360,7 @@ const MainApp: React.FC<{ user: User; onLogout: () => void }> = ({ user, onLogou
                 key={dateKey} // CRITICAL: This ensures the form resets when the day changes
                 initialEntry={allocations[dateKey] || null}
                 onSave={handleSaveDailyEntry}
+                onReplicate={handleReplicateDailyEntry}
                 onDelete={handleDeleteDailyEntry}
                 projects={projects}
                 previousEntry={previousEntry}
@@ -334,13 +383,13 @@ const MainApp: React.FC<{ user: User; onLogout: () => void }> = ({ user, onLogou
                     <p className="text-2xl font-bold text-orange-500 dark:text-orange-400">{decimalHoursToHHMM(monthlyStats.totalHours)}</p>
                 </div>
                 {Object.keys(monthlyStats.hoursByClient).length > 0 && (
-                    <div className="border-t border-gray-200 dark:border-gray-600 pt-2">
-                        <p className="text-sm text-gray-500 dark:text-gray-400 text-center mb-1">Horas por Cliente</p>
-                        <div className="text-xs space-y-1">
+                    <div className="border-t border-gray-200 dark:border-gray-600 pt-3 mt-2">
+                        <p className="text-xs font-medium text-gray-500 dark:text-gray-400 text-center mb-2 uppercase tracking-wide">Horas por Cliente</p>
+                        <div className="flex flex-wrap gap-2 justify-center">
                             {Object.entries(monthlyStats.hoursByClient).sort(([,a],[,b]) => b - a).map(([client, hours]) => (
-                                <div key={client} className="flex justify-between">
-                                    <span className="text-gray-700 dark:text-gray-300 truncate pr-2">{client}</span>
-                                    <span className="font-mono">{decimalHoursToHHMM(hours)}</span>
+                                <div key={client} className="flex items-center bg-white dark:bg-gray-800 border border-gray-200 dark:border-gray-600 rounded-md px-2 py-1 shadow-sm">
+                                    <span className="text-xs text-gray-700 dark:text-gray-300 truncate max-w-[120px] mr-1" title={client}>{client}</span>
+                                    <span className="text-xs font-bold text-orange-600 dark:text-orange-400 font-mono">{decimalHoursToHHMM(hours)}</span>
                                 </div>
                             ))}
                         </div>
@@ -364,14 +413,17 @@ const MainApp: React.FC<{ user: User; onLogout: () => void }> = ({ user, onLogou
                   {days.map(day => {
                       const dayKey = format(day, 'yyyy-MM-dd');
                       const entry = allocations[dayKey];
+                      const dailyHours = calculateTotalHours(entry);
                       const isFilled = entry && entry.projectAllocations && entry.projectAllocations.length > 0;
                       const isCurrentMonth = isSameMonth(day, calendarDate);
                       const isCurrentDay = isToday(day);
 
                       const dayClasses = `
-                          relative p-2 rounded-lg aspect-square flex flex-col items-center justify-center transition-colors
-                          ${isCurrentMonth ? 'hover:bg-gray-200 dark:hover:bg-gray-700' : 'text-gray-400 dark:text-gray-600 hover:bg-gray-100 dark:hover:bg-gray-800'}
-                          ${isCurrentDay ? 'bg-orange-600 text-white' : ''}
+                          relative p-2 rounded-lg aspect-square flex flex-col items-center justify-center transition-all border-2
+                          ${!isCurrentMonth ? 'border-transparent opacity-30 text-gray-400 dark:text-gray-600' : 
+                            (isFilled ? 'border-green-500 dark:border-green-400' : 'border-red-300 dark:border-red-800')
+                          }
+                          ${isCurrentDay ? 'bg-orange-600 text-white' : 'hover:bg-gray-100 dark:hover:bg-gray-800'}
                       `;
 
                       return (
@@ -380,8 +432,12 @@ const MainApp: React.FC<{ user: User; onLogout: () => void }> = ({ user, onLogou
                               onClick={() => setSelectedDay(day)}
                               className={dayClasses}
                           >
-                              <span className="text-sm">{format(day, 'd')}</span>
-                              {isFilled && <div className="absolute bottom-1.5 w-1.5 h-1.5 bg-green-400 rounded-full"></div>}
+                              <span className="text-sm font-semibold mb-1">{format(day, 'd')}</span>
+                              {dailyHours > 0 && (
+                                  <span className={`text-[10px] font-bold w-full text-center ${isCurrentDay ? 'text-white' : 'text-gray-600 dark:text-gray-300'}`}>
+                                      {decimalHoursToHHMM(dailyHours)}
+                                  </span>
+                              )}
                           </button>
                       );
                   })}
@@ -413,7 +469,7 @@ const MainApp: React.FC<{ user: User; onLogout: () => void }> = ({ user, onLogou
             <div className="mt-4">
               <button
                 type="button"
-                className="inline-flex justify-center rounded-md border border-transparent bg-orange-600 px-4 py-2 text-sm font-medium text-white hover:bg-orange-700 focus:outline-none focus-visible:ring-2 focus-visible:ring-orange-500 focus-visible:ring-offset-2"
+                className="inline-flex justify-center rounded-md border border-transparent bg-orange-600 px-4 py-2 text-sm font-medium text-white hover:bg-orange-700 focus:outline-none focus:ring-2 focus:ring-orange-500 focus:border-orange-500 focus-visible:ring-offset-2"
                 onClick={() => {
                     const yesterday = subDays(new Date(), 1);
                     setCalendarDate(yesterday);

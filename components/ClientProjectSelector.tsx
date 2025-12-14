@@ -11,6 +11,23 @@ interface ClientProjectSelectorProps {
   allocatedProjectIds: string[];
 }
 
+// Duplicamos o helper aqui para consistência visual sem exportar do outro arquivo (evita dependencias circulares complexas)
+const getProjectDisplay = (project: Project) => {
+    const isNameNumeric = /^\d/.test(project.name.trim());
+    const isClientNumeric = /^\d/.test(project.client.trim());
+
+    if (isNameNumeric && !isClientNumeric) {
+        return {
+            title: project.client,
+            subtitle: `${project.name}`
+        };
+    }
+    return {
+        title: project.name,
+        subtitle: `${project.client} • ${project.code}`
+    };
+};
+
 const ClientProjectSelector: React.FC<ClientProjectSelectorProps> = ({
   isOpen,
   onClose,
@@ -24,6 +41,7 @@ const ClientProjectSelector: React.FC<ClientProjectSelectorProps> = ({
     return projects
       .filter(p => p.status === 'active' && !allocatedProjectIds.includes(p.id))
       .reduce((acc, project) => {
+        // Group by Client
         (acc[project.client] = acc[project.client] || []).push(project);
         return acc;
       }, {} as Record<string, Project[]>);
@@ -72,16 +90,19 @@ const ClientProjectSelector: React.FC<ClientProjectSelectorProps> = ({
                 <ChevronsLeft size={20} className="mr-1"/> Voltar para Clientes
             </button>
             <div className="flex-1 overflow-y-auto max-h-[50vh]">
-              {projectsByClient[selectedClient]?.map(project => (
-                <div
-                  key={project.id}
-                  onClick={() => handleSelectProject(project.id)}
-                  className="p-3 hover:bg-gray-100 dark:hover:bg-gray-700 cursor-pointer rounded-md transition-colors"
-                >
-                  <p className="font-semibold">{project.name}</p>
-                  <p className="text-sm text-gray-500 dark:text-gray-400 font-mono">{project.code}</p>
-                </div>
-              ))}
+              {projectsByClient[selectedClient]?.map(project => {
+                 const display = getProjectDisplay(project);
+                 return (
+                    <div
+                      key={project.id}
+                      onClick={() => handleSelectProject(project.id)}
+                      className="p-3 hover:bg-gray-100 dark:hover:bg-gray-700 cursor-pointer rounded-md transition-colors border-b border-gray-100 dark:border-gray-700 last:border-0"
+                    >
+                      <p className="font-bold text-lg text-gray-900 dark:text-white">{display.title}</p>
+                      <p className="text-sm text-gray-500 dark:text-gray-400 font-mono">{display.subtitle}</p>
+                    </div>
+                  );
+              })}
             </div>
           </div>
         )}

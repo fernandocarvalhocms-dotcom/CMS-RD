@@ -30,7 +30,8 @@ const calculateTotalHours = (entry: DailyEntry | null): number => {
 export const exportDetailedMonthlyReportToExcel = (
   projects: Project[],
   allocations: AllAllocations,
-  monthDate: Date
+  monthDate: Date,
+  userName: string
 ): void => {
   const monthName = format(monthDate, 'MMMM/yyyy').toUpperCase();
   const start = startOfMonth(monthDate);
@@ -44,7 +45,7 @@ export const exportDetailedMonthlyReportToExcel = (
   const merges: any[] = [];
 
   // --- Header Section ---
-  ws_data.push(['Mês:', monthName, 'Nome:', '']);
+  ws_data.push(['Mês:', monthName, 'Nome:', userName]);
   ws_data.push([]); // Empty row
 
   // --- Worked Hours Section ---

@@ -1,147 +1,365 @@
-import React, { useState, useMemo } from 'react';
-import { BarChart, Bar, XAxis, YAxis, Tooltip, ResponsiveContainer, CartesianGrid, Legend } from 'recharts';
+import React, { useState, useMemo, useEffect } from 'react';
 import { startOfMonth, endOfMonth, format, subMonths, addMonths, eachDayOfInterval } from 'date-fns';
 import { ptBR } from 'date-fns/locale';
 import type { Project, AllAllocations } from '../types';
 import { exportDetailedMonthlyReportToExcel } from '../services/exportService';
 import { decimalHoursToHHMM } from '../utils/formatters';
-
-// Requer as bibliotecas 'recharts' e 'date-fns'
-// npm install recharts date-fns
+import { 
+  PieChart, Pie, Cell, ResponsiveContainer, Tooltip as RechartsTooltip, Legend,
+  BarChart, Bar, XAxis, YAxis, CartesianGrid
+} from 'recharts';
 
 interface ReportViewProps {
   projects: Project[];
   allocations: AllAllocations;
   theme: 'light' | 'dark';
+  userName?: string;
 }
 
-const ReportView: React.FC<ReportViewProps> = ({ projects, allocations, theme }) => {
-  const [date, setDate] = useState(new Date());
+// Cores: Degradê de Laranja forte para Laranja suave, finalizando em Cinza Claro
+const COLORS = [
+  '#c2410c', // Orange 700 (Mais escuro/Forte)
+  '#ea580c', // Orange 600
+  '#f97316', // Orange 500
+  '#fb923c', // Orange 400
+  '#fdba74', // Orange 300
+  '#6b7280', // Gray 500
+  '#9ca3af', // Gray 400
+  '#cbd5e1', // Slate 300 (Cinza azulado claro)
+  '#d1d5db'  // Gray 300
+];
 
-  const { startDate, endDate } = useMemo(() => {
+// Helper para exibição inteligente na TABELA (mantém lógica de código se necessário)
+const getProjectDisplay = (project: Project | undefined) => {
+    if (!project) return { title: 'Projeto Desconhecido', subtitle: '' };
+
+    const isNameNumeric = /^\d/.test(project.name.trim());
+    const isClientNumeric = /^\d/.test(project.client.trim());
+
+    if (isNameNumeric && !isClientNumeric) {
+        return {
+            title: project.client,
+            subtitle: `${project.name}`
+        };
+    }
     return {
-      startDate: startOfMonth(date),
-      endDate: endOfMonth(date),
+        title: project.name,
+        subtitle: `${project.client}`
+    };
+};
+
+const ReportView: React.FC<ReportViewProps> = ({ projects, allocations, theme, userName }) => {
+  const [date, setDate] = useState(new Date());
+  
+  // Estado para controlar responsividade via JS (necessário para props do Recharts)
+  const [windowWidth, setWindowWidth] = useState(window.innerWidth);
+
+  useEffect(() => {
+    const handleResize = () => setWindowWidth(window.innerWidth);
+    window.addEventListener('resize', handleResize);
+    return () => window.removeEventListener('resize', handleResize);
+  }, []);
+
+  const isMobile = windowWidth < 768;
+
+  const { daysInMonth } = useMemo(() => {
+    const start = startOfMonth(date);
+    const end = endOfMonth(date);
+    return {
+      startDate: start,
+      endDate: end,
+      daysInMonth: eachDayOfInterval({ start, end })
     };
   }, [date]);
 
-  const reportData = useMemo(() => {
-    const projectHours: { [projectId: string]: number } = {};
-    const daysInInterval = eachDayOfInterval({ start: startDate, end: endDate });
-
-    daysInInterval.forEach(day => {
+  const matrixData = useMemo(() => {
+    // 1. Identificar quais projetos têm horas neste mês
+    const relevantProjectIds = new Set<string>();
+    
+    daysInMonth.forEach(day => {
         const dateKey = format(day, 'yyyy-MM-dd');
-        const dailyEntry = allocations[dateKey];
-        if (dailyEntry && dailyEntry.projectAllocations) {
-            dailyEntry.projectAllocations.forEach(alloc => {
-                if (alloc.projectId && alloc.hours > 0) {
-                    projectHours[alloc.projectId] = (projectHours[alloc.projectId] || 0) + alloc.hours;
-                }
+        const entry = allocations[dateKey];
+        if (entry && entry.projectAllocations) {
+            entry.projectAllocations.forEach(alloc => {
+                if (alloc.hours > 0) relevantProjectIds.add(alloc.projectId);
             });
         }
     });
-    
-    return Object.entries(projectHours)
-      .map(([projectId, hours]) => {
+
+    // 2. Construir linhas da matriz
+    const rows = Array.from(relevantProjectIds).map(projectId => {
         const project = projects.find(p => p.id === projectId);
+        const display = getProjectDisplay(project);
+        
+        const dailyHours: number[] = daysInMonth.map(day => {
+            const dateKey = format(day, 'yyyy-MM-dd');
+            const entry = allocations[dateKey];
+            const alloc = entry?.projectAllocations.find(a => a.projectId === projectId);
+            return alloc ? alloc.hours : 0;
+        });
+
+        const totalHours = dailyHours.reduce((acc, curr) => acc + curr, 0);
+
         return {
-          projectId,
-          projectName: project?.name || 'Projeto Desconhecido',
-          projectCode: project?.code || 'N/A',
-          client: project?.client || 'N/A',
-          hours,
+            projectId,
+            project, // Guardamos o objeto projeto para uso nos gráficos
+            display,
+            dailyHours,
+            totalHours
         };
-      })
-      .sort((a, b) => b.hours - a.hours);
-  }, [startDate, endDate, allocations, projects]);
+    }).sort((a, b) => b.totalHours - a.totalHours);
+
+    // 3. Totais por dia (coluna)
+    const dailyTotals = daysInMonth.map((day, idx) => {
+        return rows.reduce((acc, row) => acc + row.dailyHours[idx], 0);
+    });
+    
+    const monthGrandTotal = rows.reduce((acc, row) => acc + row.totalHours, 0);
+
+    return { rows, dailyTotals, monthGrandTotal };
+
+  }, [daysInMonth, allocations, projects]);
+
+  const chartData = useMemo(() => {
+    const clientMap: Record<string, number> = {};
+    const projectList: { name: string, hours: number, client: string }[] = [];
+
+    matrixData.rows.forEach(row => {
+        // Dados por Cliente
+        const clientName = row.project?.client || 'Desconhecido';
+        clientMap[clientName] = (clientMap[clientName] || 0) + row.totalHours;
+
+        // Dados por Projeto (Ranking)
+        const projectName = row.display.title; 
+
+        projectList.push({
+            name: projectName,
+            hours: row.totalHours,
+            client: clientName
+        });
+    });
+
+    const clientData = Object.entries(clientMap)
+        .map(([name, value]) => ({ name, value }))
+        .sort((a, b) => b.value - a.value);
+
+    // TOP 5 Projetos (Limitado para caber na tela sem scroll)
+    const topProjects = projectList
+        .sort((a, b) => b.hours - a.hours)
+        .slice(0, 5);
+
+    return { clientData, topProjects };
+  }, [matrixData]);
 
   const periodLabel = format(date, "MMMM 'de' yyyy", { locale: ptBR });
 
-  const handlePrev = () => {
-    setDate(d => subMonths(d, 1));
-  };
-
-  const handleNext = () => {
-    setDate(d => addMonths(d, 1));
-  };
+  const handlePrev = () => setDate(d => subMonths(d, 1));
+  const handleNext = () => setDate(d => addMonths(d, 1));
 
   const handleExport = () => {
     try {
-      exportDetailedMonthlyReportToExcel(projects, allocations, date);
+      exportDetailedMonthlyReportToExcel(projects, allocations, date, userName || '');
     } catch (error) {
       console.error("Falha na exportação do Excel:", error);
-      alert("Ocorreu um erro ao gerar o arquivo Excel. Verifique o console para mais detalhes.");
+      alert("Ocorreu um erro ao gerar o arquivo Excel.");
     }
   };
-  
-  const chartColors = {
-      axis: theme === 'dark' ? '#A0AEC0' : '#4A5568',
-      grid: theme === 'dark' ? '#4A5568' : '#E2E8F0',
-      tooltip: {
-          backgroundColor: theme === 'dark' ? '#1A202C' : '#FFFFFF',
-          border: theme === 'dark' ? '1px solid #4A5568' : '1px solid #CBD5E0',
-          labelColor: theme === 'dark' ? '#E2E8F0' : '#1A202C'
-      }
+
+  const CustomTooltip = ({ active, payload, label }: any) => {
+    if (active && payload && payload.length) {
+      return (
+        <div className="bg-white dark:bg-gray-800 p-2 border border-gray-200 dark:border-gray-700 rounded shadow text-sm z-50">
+          <p className="font-semibold">{label || payload[0].name}</p>
+          <p className="text-orange-600 dark:text-orange-400">
+            {decimalHoursToHHMM(payload[0].value)} horas
+          </p>
+        </div>
+      );
+    }
+    return null;
   };
 
-
   return (
-    <div className="p-4 space-y-6">
-      <div className="flex justify-between items-center bg-gray-100 dark:bg-gray-700 p-2 rounded-md">
-        <button onClick={handlePrev} className="px-3 py-1 bg-gray-200 dark:bg-gray-600 rounded hover:bg-gray-300 dark:hover:bg-gray-500">&lt;</button>
-        <div className="text-center font-semibold capitalize">{periodLabel}</div>
-        <button onClick={handleNext} className="px-3 py-1 bg-gray-200 dark:bg-gray-600 rounded hover:bg-gray-300 dark:hover:bg-gray-500">&gt;</button>
-      </div>
-      
-      {reportData.length > 0 ? (
-        <>
-        <div className="bg-gray-100 dark:bg-gray-700 p-4 rounded-lg">
-          <h3 className="text-lg font-semibold mb-4 text-gray-800 dark:text-white">Horas por Projeto</h3>
-          <div style={{ width: '100%', height: 400 }}>
-            <ResponsiveContainer>
-              <BarChart data={reportData} layout="vertical" margin={{ top: 5, right: 20, left: 20, bottom: 5 }}>
-                <CartesianGrid strokeDasharray="3 3" stroke={chartColors.grid} />
-                <XAxis type="number" stroke={chartColors.axis} />
-                <YAxis dataKey="projectName" type="category" width={150} stroke={chartColors.axis} tick={{fontSize: 12}}/>
-                <Tooltip 
-                  cursor={{fill: theme === 'dark' ? '#2D3748' : '#F7FAFC' }}
-                  contentStyle={chartColors.tooltip}
-                  labelStyle={{color: chartColors.tooltip.labelColor}}
-                  formatter={(value: number) => [decimalHoursToHHMM(value), 'Horas']}
-                />
-                <Legend />
-                <Bar dataKey="hours" name="Horas" fill="#F97316" />
-              </BarChart>
-            </ResponsiveContainer>
+    // Aumentado pb-40 para pb-72 para garantir MUITO espaço extra no final da página
+    <div className="p-4 space-y-4 flex flex-col h-full pb-72">
+      {/* Header de Controle de Data */}
+      <div className="bg-gray-100 dark:bg-gray-700 p-2 rounded-md space-y-3">
+          <div className="flex justify-between items-center">
+            <button onClick={handlePrev} className="px-3 py-1 bg-gray-200 dark:bg-gray-600 rounded hover:bg-gray-300 dark:hover:bg-gray-500">&lt;</button>
+            <div className="text-center font-semibold capitalize">{periodLabel}</div>
+            <button onClick={handleNext} className="px-3 py-1 bg-gray-200 dark:bg-gray-600 rounded hover:bg-gray-300 dark:hover:bg-gray-500">&gt;</button>
           </div>
-        </div>
+      </div>
 
-        <div className="bg-gray-100 dark:bg-gray-700 p-4 rounded-lg">
-            <h3 className="text-lg font-semibold mb-2 text-gray-800 dark:text-white">Tabela de Dados</h3>
-            <ul className="divide-y divide-gray-200 dark:divide-gray-600">
-                {reportData.map(item => (
-                    <li key={item.projectId} className="py-2 flex justify-between">
-                        <div>
-                            <p className="font-medium text-gray-800 dark:text-white">{item.projectName}</p>
-                            <p className="text-sm text-gray-500 dark:text-gray-400">{item.client}</p>
-                        </div>
-                        <p className="font-semibold text-orange-600 dark:text-orange-400">{decimalHoursToHHMM(item.hours)}</p>
-                    </li>
-                ))}
-            </ul>
+      {matrixData.rows.length > 0 ? (
+        <div className="flex flex-col space-y-8">
+            {/* SEÇÃO DA TABELA */}
+             <div className="bg-white dark:bg-gray-800 rounded-lg shadow overflow-hidden border border-gray-200 dark:border-gray-700">
+                <div className="overflow-x-auto">
+                    <table className="w-full text-xs text-left border-collapse">
+                        <thead>
+                            <tr className="bg-gray-100 dark:bg-gray-700 text-gray-700 dark:text-gray-300 border-b border-gray-300 dark:border-gray-600">
+                                <th className="p-2 sticky left-0 bg-gray-100 dark:bg-gray-700 z-10 min-w-[150px] shadow-[2px_0_5px_-2px_rgba(0,0,0,0.1)]">
+                                    Operação / Dia
+                                </th>
+                                <th className="p-2 min-w-[60px] text-center font-bold bg-gray-200 dark:bg-gray-600 border-r border-gray-300 dark:border-gray-500">
+                                    Total
+                                </th>
+                                {daysInMonth.map(day => (
+                                    <th key={day.toString()} className="p-2 min-w-[40px] text-center font-medium border-r border-gray-200 dark:border-gray-600">
+                                        {format(day, 'dd')}
+                                        <div className="text-[10px] text-gray-500 uppercase">{format(day, 'EEEEE', { locale: ptBR })}</div>
+                                    </th>
+                                ))}
+                            </tr>
+                        </thead>
+                        <tbody>
+                            {matrixData.rows.map((row) => (
+                                <tr key={row.projectId} className="border-b border-gray-100 dark:border-gray-700 hover:bg-gray-50 dark:hover:bg-gray-750 transition-colors">
+                                    <td className="p-2 sticky left-0 bg-white dark:bg-gray-800 z-10 shadow-[2px_0_5px_-2px_rgba(0,0,0,0.1)] max-w-[180px]">
+                                        <div className="font-semibold text-gray-900 dark:text-gray-100 truncate" title={row.display.title}>
+                                            {row.display.title}
+                                        </div>
+                                        <div className="text-[10px] text-gray-500 dark:text-gray-400 truncate">
+                                            {row.display.subtitle}
+                                        </div>
+                                    </td>
+                                    <td className="p-2 text-center font-bold text-orange-600 dark:text-orange-400 bg-orange-50 dark:bg-gray-700/50 border-r border-gray-200 dark:border-gray-600">
+                                        {decimalHoursToHHMM(row.totalHours)}
+                                    </td>
+                                    {row.dailyHours.map((hours, idx) => (
+                                        <td key={idx} className={`p-1 text-center border-r border-gray-100 dark:border-gray-700 ${hours > 0 ? 'text-gray-900 dark:text-gray-100 bg-green-50 dark:bg-green-900/20' : 'text-gray-300 dark:text-gray-600'}`}>
+                                            {hours > 0 ? decimalHoursToHHMM(hours) : '-'}
+                                        </td>
+                                    ))}
+                                </tr>
+                            ))}
+                            {/* Linha de Totais Gerais */}
+                            <tr className="bg-gray-100 dark:bg-gray-700 font-bold border-t-2 border-gray-300 dark:border-gray-500">
+                                <td className="p-2 sticky left-0 bg-gray-100 dark:bg-gray-700 z-10 text-right pr-4 shadow-[2px_0_5px_-2px_rgba(0,0,0,0.1)]">
+                                    TOTAL GERAL
+                                </td>
+                                <td className="p-2 text-center text-orange-600 dark:text-orange-400 bg-gray-200 dark:bg-gray-600 border-r border-gray-300 dark:border-gray-500">
+                                    {decimalHoursToHHMM(matrixData.monthGrandTotal)}
+                                </td>
+                                {matrixData.dailyTotals.map((total, idx) => (
+                                    <td key={idx} className="p-1 text-center text-[10px] text-gray-600 dark:text-gray-300 border-r border-gray-200 dark:border-gray-600">
+                                        {total > 0 ? decimalHoursToHHMM(total) : ''}
+                                    </td>
+                                ))}
+                            </tr>
+                        </tbody>
+                    </table>
+                </div>
+             </div>
+             
+             <button 
+                onClick={handleExport}
+                className="w-full px-4 py-3 bg-green-600 text-white rounded-md hover:bg-green-500 transition-colors font-bold shadow-sm"
+            >
+                Exportar para Excel (.xlsx)
+            </button>
+
+            {/* SEÇÃO DOS GRÁFICOS */}
+            {/* Aumentado mb-10 para mb-24 */}
+            <div className="grid grid-cols-1 lg:grid-cols-2 gap-6 mb-24">
+                {/* Gráfico de Pizza - Horas por Operação */}
+                <div className="bg-white dark:bg-gray-800 p-4 rounded-lg shadow border border-gray-200 dark:border-gray-700">
+                    <h3 className="text-center font-bold text-gray-700 dark:text-gray-200 mb-4">Horas por Operação</h3>
+                    {/* Altura reduzida para 250px no mobile para ganhar espaço */}
+                    <div className="h-[250px] md:h-[450px] w-full"> 
+                        <ResponsiveContainer width="100%" height="100%">
+                            <PieChart>
+                                <Pie
+                                    data={chartData.clientData}
+                                    // No mobile, centraliza (50%). No desktop, joga para esquerda (40%) para caber a legenda lateral.
+                                    cx={isMobile ? "50%" : "40%"}
+                                    cy="50%"
+                                    labelLine={false}
+                                    // Raio responsivo: um pouco menor no mobile para não cortar
+                                    outerRadius={isMobile ? "65%" : "75%"}
+                                    fill="#8884d8"
+                                    dataKey="value"
+                                    nameKey="name"
+                                    label={({ cx, cy, midAngle, innerRadius, outerRadius, percent, index }) => {
+                                        const radius = innerRadius + (outerRadius - innerRadius) * 0.5;
+                                        const x = cx + radius * Math.cos(-midAngle * Math.PI / 180);
+                                        const y = cy + radius * Math.sin(-midAngle * Math.PI / 180);
+                                        
+                                        const textColor = index >= 5 ? '#374151' : 'white';
+
+                                        return percent > 0.05 ? (
+                                            <text x={x} y={y} fill={textColor} textAnchor={x > cx ? 'start' : 'end'} dominantBaseline="central" fontSize={isMobile ? 10 : 12}>
+                                                {`${(percent * 100).toFixed(0)}%`}
+                                            </text>
+                                        ) : null;
+                                    }}
+                                >
+                                    {chartData.clientData.map((entry, index) => (
+                                        <Cell key={`cell-${index}`} fill={COLORS[index % COLORS.length]} />
+                                    ))}
+                                </Pie>
+                                <RechartsTooltip content={<CustomTooltip />} />
+                                {/* 
+                                    Lógica da Legenda Responsiva:
+                                    - Mobile: Vertical, Embaixo, Centralizado (Evita quebrar o layout horizontal)
+                                    - Desktop: Vertical, Direita, Meio (Como solicitado anteriormente)
+                                    - Cor: Preto (#000000) no modo claro, Cinza Claro (#d1d5db) no modo escuro.
+                                */}
+                                <Legend 
+                                    layout={isMobile ? "horizontal" : "vertical"}
+                                    verticalAlign={isMobile ? "bottom" : "middle"}
+                                    align={isMobile ? "center" : "right"}
+                                    wrapperStyle={isMobile 
+                                        ? { fontSize: '11px', paddingTop: '10px', color: theme === 'dark' ? '#d1d5db' : '#000000' } 
+                                        : { fontSize: '12px', paddingLeft: '10px', color: theme === 'dark' ? '#d1d5db' : '#000000' }
+                                    }
+                                />
+                            </PieChart>
+                        </ResponsiveContainer>
+                    </div>
+                </div>
+
+                {/* Gráfico de Barras - Ranking de Operações */}
+                {/* Adicionado pb-16 especificamente neste container */}
+                <div className="bg-white dark:bg-gray-800 p-4 rounded-lg shadow border border-gray-200 dark:border-gray-700 flex flex-col pb-16">
+                    <h3 className="text-center font-bold text-gray-700 dark:text-gray-200 mb-4">Top 5 Operações (Horas)</h3>
+                    {/* Altura reduzida para 250px no mobile para ganhar espaço */}
+                    <div className="h-[250px] md:h-[450px] w-full">
+                        <ResponsiveContainer width="100%" height="100%">
+                            <BarChart
+                                layout="vertical"
+                                data={chartData.topProjects}
+                                margin={{ top: 5, right: 30, left: 10, bottom: 5 }}
+                            >
+                                <CartesianGrid strokeDasharray="3 3" horizontal={false} stroke={theme === 'dark' ? '#374151' : '#e5e7eb'} />
+                                <XAxis type="number" hide />
+                                <YAxis 
+                                    type="category" 
+                                    dataKey="name" 
+                                    // No mobile, reduzimos a largura do eixo Y para dar mais espaço às barras
+                                    width={isMobile ? 100 : 180} 
+                                    // Cor do texto do eixo Y ajustada para preto no modo claro
+                                    tick={{ fontSize: isMobile ? 9 : 11, fill: theme === 'dark' ? '#d1d5db' : '#000000' }} 
+                                    interval={0}
+                                />
+                                <RechartsTooltip content={<CustomTooltip />} cursor={{fill: 'transparent'}} />
+                                <Bar dataKey="hours" radius={[0, 4, 4, 0]}>
+                                    {chartData.topProjects.map((entry, index) => (
+                                        <Cell key={`cell-${index}`} fill={COLORS[index % COLORS.length]} />
+                                    ))}
+                                </Bar>
+                            </BarChart>
+                        </ResponsiveContainer>
+                    </div>
+                </div>
+            </div>
         </div>
-        
-        <button 
-            onClick={handleExport}
-            className="w-full mt-4 px-4 py-2 bg-green-600 text-white rounded-md hover:bg-green-500 transition-colors font-semibold"
-        >
-            Exportar para Excel (.xlsx)
-        </button>
-        </>
       ) : (
-        <p className="text-center text-gray-500 dark:text-gray-400 mt-8">Nenhum dado de alocação encontrado para este período.</p>
+        <div className="flex-1 flex flex-col items-center justify-center min-h-[300px] text-gray-500 dark:text-gray-400">
+            <p>Nenhum dado de alocação encontrado para {periodLabel}.</p>
+        </div>
       )}
-
     </div>
   );
 };
