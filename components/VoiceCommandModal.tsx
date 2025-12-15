@@ -1,5 +1,5 @@
 import React, { useState, useEffect, useRef } from 'react';
-import { GoogleGenAI, LiveServerMessage, type LiveSession, Type, Modality } from '@google/genai';
+import { GoogleGenAI, LiveServerMessage, Type, Modality } from '@google/genai';
 import { Mic, Loader, AlertCircle } from 'lucide-react';
 
 import Modal from './Modal';
@@ -28,7 +28,7 @@ const VoiceCommandModal: React.FC<VoiceCommandModalProps> = ({ isOpen, onClose, 
   const [transcript, setTranscript] = useState('');
   const [errorMessage, setErrorMessage] = useState('');
 
-  const sessionPromiseRef = useRef<Promise<LiveSession> | null>(null);
+  const sessionPromiseRef = useRef<Promise<any> | null>(null);
   const audioContextRef = useRef<AudioContext | null>(null);
   const scriptProcessorRef = useRef<ScriptProcessorNode | null>(null);
   const mediaStreamRef = useRef<MediaStream | null>(null);

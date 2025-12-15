@@ -1,5 +1,5 @@
 import React, { useState, useMemo, useCallback } from 'react';
-import type { DailyEntry, Project, ProjectTimeAllocation } from '../types';
+import type { DailyEntry, Project, ProjectTimeAllocation, TimeShift } from '../types';
 import { Plus, Trash2, Mic, Copy, Calculator, FastForward, CheckSquare, Square, Eraser } from 'lucide-react';
 import { parse, differenceInMinutes, startOfMonth, endOfMonth, eachDayOfInterval, format, startOfWeek, endOfWeek, isSameMonth, isSameDay, addMonths, subMonths } from 'date-fns';
 import { ptBR } from 'date-fns/locale';
@@ -18,6 +18,7 @@ interface DayEntryFormProps {
 }
 
 const SHIFT_NAMES = { morning: 'Manhã', afternoon: 'Tarde', evening: 'Noite' };
+const SHIFT_KEYS = ['morning', 'afternoon', 'evening'] as const;
 
 const getProjectDisplay = (project: Project | undefined) => {
     if (!project) return { title: 'Projeto não encontrado', subtitle: '' };
@@ -39,7 +40,11 @@ const getProjectDisplay = (project: Project | undefined) => {
 };
 
 const DayEntryForm: React.FC<DayEntryFormProps> = ({ initialEntry, onSave, onReplicate, onDelete, projects, previousEntry }) => {
-  const [shifts, setShifts] = useState(initialEntry ? {
+  const [shifts, setShifts] = useState<{
+    morning: TimeShift;
+    afternoon: TimeShift;
+    evening: TimeShift;
+  }>(initialEntry ? {
     morning: initialEntry.morning,
     afternoon: initialEntry.afternoon,
     evening: initialEntry.evening
@@ -71,11 +76,12 @@ const DayEntryForm: React.FC<DayEntryFormProps> = ({ initialEntry, onSave, onRep
 
   const calculateTotalHours = useCallback((currentShifts: typeof shifts) => {
     let totalMinutes = 0;
-    Object.values(currentShifts).forEach(shift => {
-      if (shift.start && shift.end && /^\d{2}:\d{2}$/.test(shift.start) && /^\d{2}:\d{2}$/.test(shift.end)) {
+    Object.values(currentShifts).forEach((shift) => {
+      const s = shift as TimeShift;
+      if (s.start && s.end && /^\d{2}:\d{2}$/.test(s.start) && /^\d{2}:\d{2}$/.test(s.end)) {
         try {
-          const startTime = parse(shift.start, 'HH:mm', new Date());
-          const endTime = parse(shift.end, 'HH:mm', new Date());
+          const startTime = parse(s.start, 'HH:mm', new Date());
+          const endTime = parse(s.end, 'HH:mm', new Date());
           if (!isNaN(startTime.getTime()) && !isNaN(endTime.getTime()) && endTime > startTime) {
             totalMinutes += differenceInMinutes(endTime, startTime);
           }
@@ -257,15 +263,18 @@ const DayEntryForm: React.FC<DayEntryFormProps> = ({ initialEntry, onSave, onRep
                 </button>
              </div>
           </div>
-          {Object.entries(shifts).map(([key, value]) => (
+          {SHIFT_KEYS.map((key) => {
+            const value = shifts[key];
+            return (
             <div key={key} className="grid grid-cols-2 gap-4 items-center">
-              <label className="text-gray-700 dark:text-gray-300">{SHIFT_NAMES[key as keyof typeof SHIFT_NAMES]}</label>
+              <label className="text-gray-700 dark:text-gray-300">{SHIFT_NAMES[key]}</label>
               <div className="flex gap-2">
-                <input type="time" value={value.start} onChange={e => handleShiftChange(key as keyof typeof shifts, 'start', e.target.value)} className="bg-gray-200 dark:bg-gray-600 rounded-md p-2 w-full" />
-                <input type="time" value={value.end} onChange={e => handleShiftChange(key as keyof typeof shifts, 'end', e.target.value)} className="bg-gray-200 dark:bg-gray-600 rounded-md p-2 w-full" />
+                <input type="time" value={value.start} onChange={e => handleShiftChange(key, 'start', e.target.value)} className="bg-gray-200 dark:bg-gray-600 rounded-md p-2 w-full" />
+                <input type="time" value={value.end} onChange={e => handleShiftChange(key, 'end', e.target.value)} className="bg-gray-200 dark:bg-gray-600 rounded-md p-2 w-full" />
               </div>
             </div>
-          ))}
+            );
+          })}
         </div>
         
         <div className="bg-gray-100 dark:bg-gray-700 p-4 rounded-lg text-center">

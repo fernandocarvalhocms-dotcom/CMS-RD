@@ -7,7 +7,6 @@ import {
 import { ptBR } from 'date-fns/locale';
 import { utils, read } from 'xlsx';
 
-import useLocalStorage from './hooks/useLocalStorage';
 import type { Project, AllAllocations, View, DailyEntry, User } from './types';
 import Header from './components/Header';
 import BottomNav from './components/BottomNav';
@@ -18,10 +17,15 @@ import ReportView from './components/ReportView';
 import DayEntryForm from './components/DayEntryForm';
 import { decimalHoursToHHMM } from './utils/formatters';
 import LoginScreen from './components/LoginScreen';
+import { 
+    fetchProjects, saveProject, deleteProject, deleteAllProjects,
+    fetchAllocations, saveAllocation, deleteAllocation, clearAllocationsForProject,
+    fetchSettings, saveSettings, createUser, loginUser, fetchUserById
+} from './services/dataService';
 
 
 // Icons from lucide-react
-import { Plus, AlertTriangle, ArrowLeft, Sun, Moon, LogOut } from 'lucide-react';
+import { Plus, AlertTriangle, ArrowLeft, Sun, Moon, LogOut, Loader2 } from 'lucide-react';
 
 interface MonthlyStats {
     totalHours: number;
@@ -30,14 +34,26 @@ interface MonthlyStats {
 
 type Theme = 'light' | 'dark';
 
+const SESSION_KEY = 'cms_user_id';
+
+// Helper para gerar UUID
+const generateUUID = () => {
+    if (typeof crypto !== 'undefined' && crypto.randomUUID) {
+        return crypto.randomUUID();
+    }
+    return 'xxxxxxxx-xxxx-4xxx-yxxx-xxxxxxxxxxxx'.replace(/[xy]/g, function(c) {
+        var r = Math.random() * 16 | 0, v = c == 'x' ? r : (r & 0x3 | 0x8);
+        return v.toString(16);
+    });
+};
+
 const MainApp: React.FC<{ user: User; onLogout: () => void }> = ({ user, onLogout }) => {
   const [activeView, setActiveView] = useState<View>('timesheet');
-  const [projects, setProjects] = useLocalStorage<Project[]>(`${user.id}_projects`, []);
-  const [allocations, setAllocations] = useLocalStorage<AllAllocations>(`${user.id}_allocations`, {});
-  const [email, setEmail] = useLocalStorage<string>(`${user.id}_user_email`, '');
-  
-  // Default theme changed to 'light'
-  const [theme, setTheme] = useLocalStorage<Theme>(`${user.id}_theme`, 'light');
+  const [projects, setProjects] = useState<Project[]>([]);
+  const [allocations, setAllocations] = useState<AllAllocations>({});
+  const [email, setEmail] = useState<string>('');
+  const [theme, setTheme] = useState<Theme>('light');
+  const [isLoadingData, setIsLoadingData] = useState(true);
 
   const [isProjectFormOpen, setIsProjectFormOpen] = useState(false);
   const [projectToEdit, setProjectToEdit] = useState<Project | null>(null);
@@ -48,14 +64,54 @@ const MainApp: React.FC<{ user: User; onLogout: () => void }> = ({ user, onLogou
   const [showReminder, setShowReminder] = useState(false);
   const [yesterdayDateString, setYesterdayDateString] = useState('');
 
+  // Initial Data Load from LocalStorage Service
+  useEffect(() => {
+    const loadData = async () => {
+        setIsLoadingData(true);
+        try {
+            // Carrega dados persistentes
+            const [p, a, s] = await Promise.all([
+                fetchProjects(user.id),
+                fetchAllocations(user.id),
+                fetchSettings(user.id)
+            ]);
+            setProjects(p);
+            setAllocations(a);
+            setTheme(s.theme);
+            setEmail(s.email);
+        } catch (e) {
+            console.error("Failed to load user data", e);
+        } finally {
+            setIsLoadingData(false);
+        }
+    };
+    loadData();
+  }, [user.id]);
+
   useEffect(() => {
     const root = window.document.documentElement;
     root.classList.remove('light', 'dark');
     root.classList.add(theme);
   }, [theme]);
 
+  // Save Settings when they change
+  const handleThemeChange = (newTheme: Theme) => {
+      setTheme(newTheme);
+      saveSettings(user.id, { theme: newTheme });
+  };
+  
+  const handleEmailChange = (newEmail: string) => {
+      setEmail(newEmail);
+  };
+  
+  const saveEmailToDb = () => {
+      saveSettings(user.id, { email });
+  }
+
   // Daily reminder check
   useEffect(() => {
+    if (isLoadingData) return; // Wait for data
+
     const yesterday = subDays(new Date(), 1);
     const yesterdayKey = format(yesterday, 'yyyy-MM-dd');
     const todayKey = format(new Date(), 'yyyy-MM-dd');
@@ -67,53 +123,55 @@ const MainApp: React.FC<{ user: User; onLogout: () => void }> = ({ user, onLogou
            setYesterdayDateString(format(yesterday, "EEEE, dd/MM", { locale: ptBR }));
        }
     }
-  }, [allocations]);
+  }, [allocations, isLoadingData]);
 
-  const handleSaveProject = (project: Project) => {
+  const handleSaveProject = async (project: Project) => {
+    // Update local state optimistic
     if (projectToEdit) {
       setProjects(prev => prev.map(p => p.id === project.id ? project : p));
     } else {
       setProjects(prev => [...prev, project]);
     }
+    
+    // Save to LocalStorage DB
+    await saveProject(user.id, project);
+
     setIsProjectFormOpen(false);
     setProjectToEdit(null);
   };
 
-  const handleDeleteProject = (projectId: string) => {
-    // Robust update: Filter creates a new array reference
-    setProjects(prevProjects => {
-        const updatedProjects = prevProjects.filter(p => p.id !== projectId);
-        return updatedProjects;
-    });
-
-    // Also remove allocations for this project to maintain consistency
+  const handleDeleteProject = async (projectId: string) => {
+    setProjects(prevProjects => prevProjects.filter(p => p.id !== projectId));
+    
     setAllocations(prevAllocations => {
         const newAllocations: AllAllocations = {};
         Object.keys(prevAllocations).forEach(date => {
             const entry = prevAllocations[date];
             const newProjectAllocations = entry.projectAllocations.filter(pa => pa.projectId !== projectId);
-            
-            // Only keep the day if it still has data or shifts, otherwise update just the allocations
-            newAllocations[date] = {
-                ...entry,
-                projectAllocations: newProjectAllocations
-            };
+            newAllocations[date] = { ...entry, projectAllocations: newProjectAllocations };
         });
         return newAllocations;
     });
+
+    await deleteProject(projectId);
+    // Também limpa alocações salvas
+    await clearAllocationsForProject(user.id, projectId, allocations);
   };
 
-  const handleDeleteAllProjects = () => {
+  const handleDeleteAllProjects = async () => {
     setProjects([]);
-    setAllocations({}); // Clear all allocations as projects are gone
+    setAllocations({}); 
+    await deleteAllProjects(user.id);
   };
   
-  const handleToggleProjectStatus = (projectId: string) => {
-    setProjects(prev => prev.map(p => 
-      p.id === projectId 
-      ? { ...p, status: p.status === 'active' ? 'inactive' : 'active' } 
-      : p
-    ));
+  const handleToggleProjectStatus = async (projectId: string) => {
+    const project = projects.find(p => p.id === projectId);
+    if (!project) return;
+    
+    const updatedProject = { ...project, status: (project.status === 'active' ? 'inactive' : 'active') as 'active'|'inactive' };
+    
+    setProjects(prev => prev.map(p => p.id === projectId ? updatedProject : p));
+    await saveProject(user.id, updatedProject);
   };
   
   const handleEditProject = (project: Project) => {
@@ -122,23 +180,20 @@ const MainApp: React.FC<{ user: User; onLogout: () => void }> = ({ user, onLogou
   };
 
   const generateStableId = (name: string, client: string) => {
-    // Cria um ID baseado no nome e cliente para que re-sincronizações não percam o vínculo com as horas já lançadas
     try {
         const str = `${name.trim().toLowerCase()}-${client.trim().toLowerCase()}`;
-        // Simples hash numérico ou string limpa
         return btoa(unescape(encodeURIComponent(str))).replace(/[^a-zA-Z0-9]/g, '').substring(0, 32);
     } catch (e) {
         return `proj-${Date.now()}-${Math.random()}`;
     }
   };
 
-  const handleImportProjects = (file: File) => {
+  const handleImportProjects = async (file: File) => {
     if (!file) return;
     const reader = new FileReader();
-    reader.onload = (event) => {
+    reader.onload = async (event) => {
       try {
         const data = event.target?.result;
-        // Importante: read com type: array detecta melhor a codificação
         const workbook = read(data, { type: 'array' });
         const sheetName = workbook.SheetNames[0];
         const worksheet = workbook.Sheets[sheetName];
@@ -168,8 +223,10 @@ const MainApp: React.FC<{ user: User; onLogout: () => void }> = ({ user, onLogou
 
         if (importedProjects.length > 0) {
            setProjects(importedProjects);
-           alert(`Lista de projetos ATUALIZADA com sucesso!\n\nForam carregados ${importedProjects.length} projetos.\nOs projetos anteriores foram removidos da visualização.`);
-          
+           for (const p of importedProjects) {
+               await saveProject(user.id, p);
+           }
+           alert(`Lista de projetos ATUALIZADA com sucesso!\n\nForam carregados ${importedProjects.length} projetos.`);
         } else {
           alert("Nenhum projeto válido encontrado. Verifique as colunas: Centro de custo, ID contabil, Projeto, cliente.");
         }
@@ -190,46 +247,48 @@ const MainApp: React.FC<{ user: User; onLogout: () => void }> = ({ user, onLogou
       return allocations[prevKey] || null;
   }, [selectedDay, allocations]);
 
-  const handleSaveDailyEntry = (entry: DailyEntry) => {
-    if (!dateKey) return;
-    setAllocations(prev => ({
-      ...prev,
-      [dateKey]: entry,
-    }));
-    setSelectedDay(null); // Go back to calendar view after saving
-  };
-
-  // UPDATED: Now accepts an array of Dates instead of a number
-  const handleReplicateDailyEntry = (entry: DailyEntry, targetDates: Date[]) => {
-      if (!selectedDay || targetDates.length === 0) return;
-      
-      setAllocations(prev => {
-          const newAllocations = { ...prev };
-          targetDates.forEach(date => {
-              const key = format(date, 'yyyy-MM-dd');
-              newAllocations[key] = entry;
-          });
-          return newAllocations;
-      });
-      
-      alert(`Apontamento replicado com sucesso para ${targetDates.length} dias!`);
-      setSelectedDay(null); // Return to calendar
-  };
-
-  const handleDeleteDailyEntry = () => {
+  const handleSaveDailyEntry = async (entry: DailyEntry) => {
     if (!dateKey) return;
     
-    // Direct manipulation and state set ensures update
+    // Atualiza estado local (UI instantânea)
+    setAllocations(prev => ({ ...prev, [dateKey]: entry }));
+    
+    // PERSISTÊNCIA ROBUSTA NO LOCALSTORAGE
+    await saveAllocation(user.id, dateKey, entry);
+    
+    setSelectedDay(null);
+  };
+
+  const handleReplicateDailyEntry = async (entry: DailyEntry, targetDates: Date[]) => {
+      if (!selectedDay || targetDates.length === 0) return;
+      
+      const newAllocationsLocal = { ...allocations };
+      const savePromises = [];
+
+      targetDates.forEach(date => {
+          const key = format(date, 'yyyy-MM-dd');
+          newAllocationsLocal[key] = entry;
+          savePromises.push(saveAllocation(user.id, key, entry));
+      });
+      
+      setAllocations(newAllocationsLocal);
+      await Promise.all(savePromises);
+      
+      alert(`Apontamento replicado com sucesso para ${targetDates.length} dias!`);
+      setSelectedDay(null);
+  };
+
+  const handleDeleteDailyEntry = async () => {
+    if (!dateKey) return;
+    
     setAllocations(prev => {
         const newAllocations = { ...prev };
-        // Deleta se existir, senão só ignora
-        if (newAllocations[dateKey]) {
-            delete newAllocations[dateKey];
-        }
+        if (newAllocations[dateKey]) delete newAllocations[dateKey];
         return newAllocations;
     });
     
-    setSelectedDay(null); // Return to calendar immediately
+    await deleteAllocation(user.id, dateKey);
+    setSelectedDay(null);
   };
   
   const projectsById = useMemo(() => {
@@ -283,6 +342,15 @@ const MainApp: React.FC<{ user: User; onLogout: () => void }> = ({ user, onLogou
 
 
   const renderContent = () => {
+    if (isLoadingData) {
+        return (
+            <div className="flex flex-col items-center justify-center h-[60vh]">
+                <Loader2 className="animate-spin text-orange-500 mb-4" size={48} />
+                <p className="text-gray-500">Carregando seus dados...</p>
+            </div>
+        );
+    }
+
     switch (activeView) {
       case 'projects':
         return (
@@ -317,7 +385,7 @@ const MainApp: React.FC<{ user: User; onLogout: () => void }> = ({ user, onLogou
                   onClick={onLogout}
                   className="w-full px-4 py-2 bg-gray-500 text-white rounded-md hover:bg-gray-600 transition-colors flex items-center justify-center gap-2"
                 >
-                  <LogOut size={16}/> Sair / Trocar Usuário
+                  <LogOut size={16}/> Sair
                 </button>
             </div>
             <div className="bg-gray-100 dark:bg-gray-700 p-4 rounded-lg">
@@ -326,19 +394,18 @@ const MainApp: React.FC<{ user: User; onLogout: () => void }> = ({ user, onLogou
                   type="email"
                   id="email"
                   value={email}
-                  onChange={(e) => setEmail(e.target.value)}
+                  onChange={(e) => handleEmailChange(e.target.value)}
+                  onBlur={saveEmailToDb}
                   placeholder="seuemail@exemplo.com"
                   className="mt-1 block w-full bg-gray-200 dark:bg-gray-600 border-gray-300 dark:border-gray-500 rounded-md shadow-sm focus:ring-orange-500 focus:border-orange-500 p-2"
                 />
                 <p className="mt-2 text-xs text-gray-500 dark:text-gray-400">Este email será usado como referência nos arquivos exportados.</p>
             </div>
-            <div className="bg-gray-100 dark:bg-gray-700 p-4 rounded-lg">
-                <h2 className="text-lg font-semibold mb-2">Notificações</h2>
-                <p className="text-sm text-gray-600 dark:text-gray-400">Este aplicativo usa lembretes visuais ao invés de notificações do sistema. Lembre-se de verificar o app por volta das 21h para garantir que suas horas foram lançadas.</p>
-            </div>
              <div className="bg-gray-100 dark:bg-gray-700 p-4 rounded-lg">
-                <h2 className="text-lg font-semibold mb-2">Dados</h2>
-                <p className="text-sm text-gray-600 dark:text-gray-400">Todos os dados são armazenados localmente no seu navegador. A sincronização com a nuvem não está implementada nesta versão.</p>
+                <h2 className="text-lg font-semibold mb-2">Armazenamento Local</h2>
+                <p className="text-sm text-gray-600 dark:text-gray-400">
+                    Seus dados estão salvos neste navegador de forma segura. Nenhuma conexão com servidor externo é necessária.
+                </p>
             </div>
           </div>
         );
@@ -357,7 +424,7 @@ const MainApp: React.FC<{ user: User; onLogout: () => void }> = ({ user, onLogou
                 <div style={{width: '90px'}}></div>
               </div>
               <DayEntryForm 
-                key={dateKey} // CRITICAL: This ensures the form resets when the day changes
+                key={dateKey} 
                 initialEntry={allocations[dateKey] || null}
                 onSave={handleSaveDailyEntry}
                 onReplicate={handleReplicateDailyEntry}
@@ -400,7 +467,7 @@ const MainApp: React.FC<{ user: User; onLogout: () => void }> = ({ user, onLogou
                   <button onClick={() => setCalendarDate(subMonths(calendarDate, 1))} className="p-2 rounded-full hover:bg-gray-200 dark:hover:bg-gray-700 transition-colors">&lt;</button>
                   <h2 className="text-xl font-bold capitalize">{format(calendarDate, 'MMMM yyyy', { locale: ptBR })}</h2>
                   <div className="flex items-center gap-2">
-                    <button onClick={() => setTheme(t => t === 'dark' ? 'light' : 'dark')} className="p-2 rounded-full hover:bg-gray-200 dark:hover:bg-gray-700 transition-colors">
+                    <button onClick={() => handleThemeChange(theme === 'dark' ? 'light' : 'dark')} className="p-2 rounded-full hover:bg-gray-200 dark:hover:bg-gray-700 transition-colors">
                       {theme === 'dark' ? <Sun /> : <Moon />}
                     </button>
                     <button onClick={() => setCalendarDate(addMonths(calendarDate, 1))} className="p-2 rounded-full hover:bg-gray-200 dark:hover:bg-gray-700 transition-colors">&gt;</button>
@@ -489,27 +556,73 @@ const MainApp: React.FC<{ user: User; onLogout: () => void }> = ({ user, onLogou
 };
 
 const App: React.FC = () => {
-  const [users, setUsers] = useLocalStorage<User[]>('app_users', []);
-  const [currentUserId, setCurrentUserId] = useLocalStorage<string | null>('app_currentUserId', null);
+  const [currentUser, setCurrentUser] = useState<User | null>(null);
+  const [loadingSession, setLoadingSession] = useState(true);
   
-  const currentUser = useMemo(() => users.find(u => u.id === currentUserId), [users, currentUserId]);
+  // Tenta restaurar sessão ao iniciar (Agora Local)
+  useEffect(() => {
+    const restoreSession = async () => {
+        setLoadingSession(true);
+        const savedId = localStorage.getItem(SESSION_KEY);
+        if (savedId) {
+            try {
+                const user = await fetchUserById(savedId);
+                if (user) {
+                    setCurrentUser(user);
+                } else {
+                    localStorage.removeItem(SESSION_KEY);
+                }
+            } catch (e) {
+                console.error("Erro ao restaurar sessão:", e);
+                localStorage.removeItem(SESSION_KEY);
+            }
+        }
+        setLoadingSession(false);
+    };
+    restoreSession();
+  }, []);
 
-  const handleLogin = (userId: string) => {
-      setCurrentUserId(userId);
+  const handleLogin = async (email: string, password: string) => {
+      try {
+          const user = await loginUser(email, password);
+          setCurrentUser(user);
+          localStorage.setItem(SESSION_KEY, user.id);
+      } catch (error) {
+          throw error; 
+      }
   };
 
-  const handleCreateUser = (name: string, password: string) => {
-      const newUser: User = { id: new Date().toISOString(), name, password };
-      setUsers(prev => [...prev, newUser]);
-      setCurrentUserId(newUser.id);
+  const handleCreateUser = async (name: string, email: string, password: string) => {
+      try {
+        const id = generateUUID();
+        const created = await createUser({ id, name, email, password });
+        if (created) {
+          setCurrentUser(created);
+          localStorage.setItem(SESSION_KEY, created.id);
+        }
+      } catch (error) {
+        throw error;
+      }
   };
-
-  if (!currentUser) {
-      return <LoginScreen users={users} onLogin={handleLogin} onCreateUser={handleCreateUser} />;
+  
+  const handleLogout = () => {
+      setCurrentUser(null);
+      localStorage.removeItem(SESSION_KEY);
+  };
+  
+  if (loadingSession) {
+      return (
+        <div className="flex h-screen items-center justify-center bg-gray-50 dark:bg-gray-900">
+            <Loader2 className="animate-spin text-orange-500" size={48} />
+        </div>
+      );
   }
 
-  return <MainApp key={currentUser.id} user={currentUser} onLogout={() => setCurrentUserId(null)} />;
-};
+  if (!currentUser) {
+      return <LoginScreen onLogin={handleLogin} onCreateUser={handleCreateUser} />;
+  }
 
+  return <MainApp key={currentUser.id} user={currentUser} onLogout={handleLogout} />;
+};
 
 export default App;

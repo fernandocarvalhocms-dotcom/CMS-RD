@@ -39,5 +39,6 @@ export type View = 'timesheet' | 'projects' | 'reports' | 'settings';
 export interface User {
   id: string;
   name: string;
+  email?: string; // Adicionado email
   password?: string; // Senha opcional para suportar usuários antigos, mas obrigatória para novos
 }
