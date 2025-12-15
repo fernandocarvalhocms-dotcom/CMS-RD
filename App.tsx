@@ -25,7 +25,7 @@ import {
 
 
 // Icons from lucide-react
-import { Plus, AlertTriangle, ArrowLeft, Sun, Moon, LogOut, Loader2 } from 'lucide-react';
+import { Plus, AlertTriangle, ArrowLeft, Sun, Moon, LogOut, Loader2, Cloud } from 'lucide-react';
 
 interface MonthlyStats {
     totalHours: number;
@@ -64,12 +64,12 @@ const MainApp: React.FC<{ user: User; onLogout: () => void }> = ({ user, onLogou
   const [showReminder, setShowReminder] = useState(false);
   const [yesterdayDateString, setYesterdayDateString] = useState('');
 
-  // Initial Data Load from LocalStorage Service
+  // Initial Data Load
   useEffect(() => {
     const loadData = async () => {
         setIsLoadingData(true);
         try {
-            // Carrega dados persistentes
+            // Carrega dados da nuvem
             const [p, a, s] = await Promise.all([
                 fetchProjects(user.id),
                 fetchAllocations(user.id),
@@ -80,7 +80,7 @@ const MainApp: React.FC<{ user: User; onLogout: () => void }> = ({ user, onLogou
             setTheme(s.theme);
             setEmail(s.email);
         } catch (e) {
-            console.error("Failed to load user data", e);
+            console.error("Failed to load user data from Supabase", e);
         } finally {
             setIsLoadingData(false);
         }
@@ -133,7 +133,7 @@ const MainApp: React.FC<{ user: User; onLogout: () => void }> = ({ user, onLogou
       setProjects(prev => [...prev, project]);
     }
     
-    // Save to LocalStorage DB
+    // Save to Supabase
     await saveProject(user.id, project);
 
     setIsProjectFormOpen(false);
@@ -253,7 +253,7 @@ const MainApp: React.FC<{ user: User; onLogout: () => void }> = ({ user, onLogou
     // Atualiza estado local (UI instantânea)
     setAllocations(prev => ({ ...prev, [dateKey]: entry }));
     
-    // PERSISTÊNCIA ROBUSTA NO LOCALSTORAGE
+    // Salva no Banco de Dados
     await saveAllocation(user.id, dateKey, entry);
     
     setSelectedDay(null);
@@ -346,7 +346,7 @@ const MainApp: React.FC<{ user: User; onLogout: () => void }> = ({ user, onLogou
         return (
             <div className="flex flex-col items-center justify-center h-[60vh]">
                 <Loader2 className="animate-spin text-orange-500 mb-4" size={48} />
-                <p className="text-gray-500">Carregando seus dados...</p>
+                <p className="text-gray-500">Sincronizando com a nuvem...</p>
             </div>
         );
     }
@@ -401,11 +401,14 @@ const MainApp: React.FC<{ user: User; onLogout: () => void }> = ({ user, onLogou
                 />
                 <p className="mt-2 text-xs text-gray-500 dark:text-gray-400">Este email será usado como referência nos arquivos exportados.</p>
             </div>
-             <div className="bg-gray-100 dark:bg-gray-700 p-4 rounded-lg">
-                <h2 className="text-lg font-semibold mb-2">Armazenamento Local</h2>
-                <p className="text-sm text-gray-600 dark:text-gray-400">
-                    Seus dados estão salvos neste navegador de forma segura. Nenhuma conexão com servidor externo é necessária.
-                </p>
+             <div className="bg-gray-100 dark:bg-gray-700 p-4 rounded-lg flex items-center">
+                <Cloud className="text-orange-500 mr-3" size={24} />
+                <div>
+                    <h2 className="text-lg font-semibold mb-1">Sincronização em Nuvem</h2>
+                    <p className="text-sm text-gray-600 dark:text-gray-400">
+                        Seus dados são salvos automaticamente no banco de dados Supabase e estão acessíveis em qualquer dispositivo.
+                    </p>
+                </div>
             </div>
           </div>
         );
