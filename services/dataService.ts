@@ -2,28 +2,35 @@ import { supabase } from './supabase';
 import type { User, Project, AllAllocations, DailyEntry } from '../types';
 
 // ==========================================
-// CONSTANTES LOCAIS (Fallback)
+// CONSTANTES LOCAIS (Fallback & Cache)
 // ==========================================
 const KEY_USERS = 'cms_users_db_v1';
 const getKeyProjects = (userId: string) => `cms_data_${userId}_projects`;
 const getKeyAllocations = (userId: string) => `cms_data_${userId}_allocations`;
 const getKeySettings = (userId: string) => `cms_data_${userId}_settings`;
 
+// Helper para logs seguros
+const logError = (context: string, error: any) => {
+    const msg = error?.message || JSON.stringify(error);
+    console.warn(`[DataService] ${context}:`, msg);
+};
+
 // ==========================================
-// USUÁRIOS (Auth Híbrido)
+// USUÁRIOS
 // ==========================================
 
 export const fetchUserById = async (userId: string): Promise<User | null> => {
-  // 1. Tenta Supabase
+  // 1. Tenta Supabase (Leitura Nuvem First)
   try {
     const { data, error } = await supabase
       .from('app_users')
       .select('*')
       .eq('id', userId)
-      .single();
+      .maybeSingle();
+
+    if (error) throw error;
 
     if (data) {
-       // Atualiza cache local de usuários se possível (opcional, simplificado aqui)
        return {
             id: data.id,
             name: data.name,
@@ -32,35 +39,43 @@ export const fetchUserById = async (userId: string): Promise<User | null> => {
         };
     }
   } catch (err) {
-    console.warn('Supabase auth check failed, checking local fallback.');
+    logError('fetchUserById (Cloud)', err);
   }
 
-  // 2. Fallback Local (se o usuário foi criado localmente antes)
+  // 2. Fallback Local
   try {
       const usersJson = localStorage.getItem(KEY_USERS);
       const users: User[] = usersJson ? JSON.parse(usersJson) : [];
       const localUser = users.find(u => u.id === userId);
       if (localUser) return localUser;
-  } catch (e) {}
+  } catch (e) {
+      console.error("Erro leitura local user:", e);
+  }
 
   return null;
 };
 
 export const loginUser = async (email: string, password: string): Promise<User> => {
-  // 1. Tenta Supabase
+  // 1. Tenta Supabase (Leitura Nuvem First)
   try {
       const { data, error } = await supabase
         .from('app_users')
         .select('*')
         .eq('email', email)
-        .single();
+        .maybeSingle();
+      
+      if (error) throw error;
 
       if (data) {
-        if (data.password_hash !== password) throw new Error('Senha incorreta (Nuvem).');
+        if (data.password_hash !== password) throw new Error('Senha incorreta.');
         return { id: data.id, name: data.name, email: data.email, password: data.password_hash };
       }
   } catch (err: any) {
-      console.warn('Login Supabase falhou, tentando local...', err.message || err);
+      if (err.message !== 'Senha incorreta.') {
+          logError('loginUser (Cloud)', err);
+      } else {
+          throw err;
+      }
   }
 
   // 2. Fallback Local
@@ -74,51 +89,61 @@ export const loginUser = async (email: string, password: string): Promise<User> 
 };
 
 export const createUser = async (user: User): Promise<User> => {
-  // Salva Localmente Primeiro
+  // 1. Salva Localmente PRIMEIRO (Escrita Local First)
   try {
       const usersJson = localStorage.getItem(KEY_USERS);
       const users: User[] = usersJson ? JSON.parse(usersJson) : [];
+      
+      // Verifica duplicidade local
       if (!users.some(u => u.email === user.email)) {
           users.push(user);
           localStorage.setItem(KEY_USERS, JSON.stringify(users));
       }
-  } catch(e) {}
+  } catch(e) {
+      console.error("Erro ao salvar usuário localmente:", e);
+  }
 
-  // Tenta Salvar no Supabase
+  // 2. Tenta Salvar no Supabase (Sync Background)
   try {
-      const { error } = await supabase
-        .from('app_users')
-        .insert([{
-            id: user.id,
-            name: user.name,
-            email: user.email,
-            password_hash: user.password
-        }]);
+      // Verifica duplicidade nuvem antes de inserir para evitar erro 500 desnecessário
+      const { data: existing } = await supabase.from('app_users').select('id').eq('email', user.email).maybeSingle();
+      
+      if (!existing) {
+          const { error } = await supabase
+            .from('app_users')
+            .insert([{
+                id: user.id,
+                name: user.name,
+                email: user.email,
+                password_hash: user.password
+            }]);
 
-      if (error) throw error;
+          if (error) throw error;
+      }
   } catch (err: any) {
-    console.warn('Aviso: Usuário criado apenas localmente. Erro nuvem:', err.message || err);
+      logError('createUser (Cloud)', err);
   }
 
   return user;
 };
 
-// Mantido para compatibilidade
 export const fetchUsers = async (): Promise<User[]> => { return []; };
 
 // ==========================================
-// PROJETOS (Híbrido)
+// PROJETOS
 // ==========================================
 
 export const fetchProjects = async (userId: string): Promise<Project[]> => {
-  // Tenta Nuvem
+  // 1. Tenta Nuvem (Leitura Nuvem First)
   try {
     const { data, error } = await supabase
       .from('projects')
       .select('*')
       .eq('user_id', userId);
 
-    if (!error && data) {
+    if (error) throw error;
+
+    if (data) {
         const projects = data.map((p: any) => ({
             id: p.id,
             name: p.name,
@@ -127,30 +152,36 @@ export const fetchProjects = async (userId: string): Promise<Project[]> => {
             accountingId: p.accounting_id,
             status: p.status
         }));
-        // Atualiza Cache Local
+        // Atualiza Cache Local (Sync Down)
         localStorage.setItem(getKeyProjects(userId), JSON.stringify(projects));
         return projects;
     }
   } catch (err) {
-      console.warn('Erro ao buscar projetos da nuvem, usando local.', err);
+      logError('fetchProjects (Cloud)', err);
   }
 
-  // Fallback Local
+  // 2. Fallback Local
   const json = localStorage.getItem(getKeyProjects(userId));
   return json ? JSON.parse(json) : [];
 };
 
 export const saveProject = async (userId: string, project: Project): Promise<boolean> => {
-  // 1. Salva Local (Sucesso Garantido)
+  // 1. Salva Local PRIMEIRO (Escrita Local First)
   try {
-      const projects = await fetchProjects(userId); // Pega o estado atual (pode ser o local se nuvem falhou)
+      // Recupera estado atual local
+      const projectsJson = localStorage.getItem(getKeyProjects(userId));
+      const projects: Project[] = projectsJson ? JSON.parse(projectsJson) : [];
+      
       const index = projects.findIndex(p => p.id === project.id);
       if (index >= 0) projects[index] = project;
       else projects.push(project);
+      
       localStorage.setItem(getKeyProjects(userId), JSON.stringify(projects));
-  } catch (e) { console.error("Erro ao salvar projeto localmente", e); }
+  } catch (e) { 
+      console.error("Erro crítico salvar projeto local:", e); 
+  }
 
-  // 2. Tenta Nuvem (Best Effort)
+  // 2. Tenta Nuvem (Sync Background)
   try {
       const payload = {
         id: project.id,
@@ -164,25 +195,32 @@ export const saveProject = async (userId: string, project: Project): Promise<boo
       const { error } = await supabase.from('projects').upsert(payload);
       if (error) throw error;
   } catch (err: any) {
-      console.warn('Aviso: Projeto salvo apenas localmente. Sync falhou:', err.message || err);
-      // Não retornamos false para não travar a UI
+      logError('saveProject (Cloud)', err);
+      // Não retorna false para não travar a UI, pois salvou local
   }
   return true;
 };
 
 export const deleteProject = async (projectId: string): Promise<boolean> => {
-    // Local
-    const userId = localStorage.getItem('cms_user_id'); // Workaround simples
-    if (userId) {
-        const projects = await fetchProjects(userId);
-        const newProjects = projects.filter(p => p.id !== projectId);
-        localStorage.setItem(getKeyProjects(userId), JSON.stringify(newProjects));
-    }
+    // 1. Local
+    try {
+        const userId = localStorage.getItem('cms_user_id'); 
+        if (userId) {
+            const projectsJson = localStorage.getItem(getKeyProjects(userId));
+            if (projectsJson) {
+                const projects: Project[] = JSON.parse(projectsJson);
+                const newProjects = projects.filter(p => p.id !== projectId);
+                localStorage.setItem(getKeyProjects(userId), JSON.stringify(newProjects));
+            }
+        }
+    } catch (e) {}
 
-    // Nuvem
+    // 2. Nuvem
     try {
         await supabase.from('projects').delete().eq('id', projectId);
-    } catch (e) {}
+    } catch (e) {
+        logError('deleteProject (Cloud)', e);
+    }
     
     return true;
 };
@@ -191,84 +229,97 @@ export const deleteAllProjects = async (userId: string): Promise<boolean> => {
     localStorage.removeItem(getKeyProjects(userId));
     try {
         await supabase.from('projects').delete().eq('user_id', userId);
-    } catch(e) {}
+    } catch(e) {
+        logError('deleteAllProjects (Cloud)', e);
+    }
     return true;
 };
 
 // ==========================================
-// ALOCAÇÕES (Híbrido)
+// ALOCAÇÕES
 // ==========================================
 
 export const fetchAllocations = async (userId: string): Promise<AllAllocations> => {
-  // Tenta Nuvem
+  // 1. Tenta Nuvem (Leitura Nuvem First)
   try {
     const { data, error } = await supabase
         .from('allocations')
         .select('date, data')
         .eq('user_id', userId);
 
-    if (!error && data) {
+    if (error) throw error;
+
+    if (data) {
         const allocations: AllAllocations = {};
         data.forEach((row: any) => {
             allocations[row.date] = row.data;
         });
-        // Atualiza Cache Local
+        // Atualiza Cache Local (Sync Down)
         localStorage.setItem(getKeyAllocations(userId), JSON.stringify(allocations));
         return allocations;
     }
   } catch (err) {
-      console.warn('Erro ao buscar alocações da nuvem, usando local.', err);
+      logError('fetchAllocations (Cloud)', err);
   }
 
-  // Fallback Local
+  // 2. Fallback Local
   const json = localStorage.getItem(getKeyAllocations(userId));
   return json ? JSON.parse(json) : {};
 };
 
 export const saveAllocation = async (userId: string, date: string, entry: DailyEntry): Promise<boolean> => {
-  // 1. Salva Local
+  // 1. Salva Local PRIMEIRO (Escrita Local First)
   try {
-      const all = await fetchAllocations(userId);
+      const json = localStorage.getItem(getKeyAllocations(userId));
+      const all: AllAllocations = json ? JSON.parse(json) : {};
+      
       all[date] = entry;
       localStorage.setItem(getKeyAllocations(userId), JSON.stringify(all));
-  } catch(e) { console.error("Erro local save allocation", e); }
+  } catch(e) { 
+      console.error("Erro crítico salvar alocação local:", e); 
+  }
 
-  // 2. Tenta Nuvem
+  // 2. Tenta Nuvem (Sync Background)
   try {
       const { error } = await supabase
         .from('allocations')
         .upsert({
           user_id: userId,
           date: date,
-          data: entry
+          data: entry // Supabase converte JSON automaticamente
         }, { onConflict: 'user_id, date' });
 
       if (error) throw error;
   } catch (err: any) {
-      console.warn(`Aviso: Falha ao sincronizar dia ${date} na nuvem:`, err.message || JSON.stringify(err));
+      logError(`saveAllocation dia ${date} (Cloud)`, err);
   }
   
   return true;
 };
 
 export const deleteAllocation = async (userId: string, date: string): Promise<boolean> => {
-  // Local
+  // 1. Local
   try {
-      const all = await fetchAllocations(userId);
-      delete all[date];
-      localStorage.setItem(getKeyAllocations(userId), JSON.stringify(all));
+      const json = localStorage.getItem(getKeyAllocations(userId));
+      if (json) {
+          const all = JSON.parse(json);
+          delete all[date];
+          localStorage.setItem(getKeyAllocations(userId), JSON.stringify(all));
+      }
   } catch(e) {}
 
-  // Nuvem
+  // 2. Nuvem
   try {
     await supabase.from('allocations').delete().eq('user_id', userId).eq('date', date);
-  } catch(e) {}
+  } catch(e) {
+      logError('deleteAllocation (Cloud)', e);
+  }
   
   return true;
 };
 
 export const clearAllocationsForProject = async (userId: string, projectId: string, currentAllocations: AllAllocations): Promise<void> => {
-    // Remove Local
+    // 1. Local Update
     const newAllocations = { ...currentAllocations };
     let changed = false;
     for (const date in newAllocations) {
@@ -282,51 +333,66 @@ export const clearAllocationsForProject = async (userId: string, projectId: stri
         localStorage.setItem(getKeyAllocations(userId), JSON.stringify(newAllocations));
     }
 
-    // Tenta Nuvem (Background)
-    const updates = [];
-    for (const [date, entry] of Object.entries(newAllocations)) {
-         updates.push(saveAllocation(userId, date, entry));
+    // 2. Nuvem Update (Iterativo para garantir consistência)
+    // Nota: Em uma app real, faria isso via SQL Function ou Batch, mas aqui iteramos
+    if (changed) {
+        const updates = [];
+        for (const [date, entry] of Object.entries(newAllocations)) {
+            updates.push(saveAllocation(userId, date, entry));
+        }
+        // Não aguardamos o Promise.all travar a UI, deixamos em background
+        Promise.all(updates).catch(e => logError('clearAllocationsForProject (Cloud)', e));
     }
-    Promise.all(updates).catch(e => console.warn("Erro ao limpar projetos nuvem", e));
 };
 
 // ==========================================
-// CONFIGURAÇÕES (Híbrido)
+// CONFIGURAÇÕES
 // ==========================================
 
 export const fetchSettings = async (userId: string): Promise<{ theme: 'light' | 'dark', email: string }> => {
+    // 1. Nuvem
     try {
-        const { data, error } = await supabase.from('user_settings').select('*').eq('user_id', userId).single();
-        if (!error && data) {
+        const { data, error } = await supabase.from('user_settings').select('*').eq('user_id', userId).maybeSingle();
+        if (error) throw error;
+        
+        if (data) {
             const settings = { theme: data.theme, email: data.email };
             localStorage.setItem(getKeySettings(userId), JSON.stringify(settings));
             return settings;
         }
-    } catch(e) {}
+    } catch(e) {
+        logError('fetchSettings (Cloud)', e);
+    }
 
+    // 2. Local
     const json = localStorage.getItem(getKeySettings(userId));
     return json ? JSON.parse(json) : { theme: 'light', email: '' };
 };
 
 export const saveSettings = async (userId: string, settings: { theme?: 'light' | 'dark', email?: string }): Promise<boolean> => {
-    // Local
+    // 1. Local
     try {
-        const current = await fetchSettings(userId);
+        const json = localStorage.getItem(getKeySettings(userId));
+        const current = json ? JSON.parse(json) : { theme: 'light', email: '' };
         const newSettings = { ...current, ...settings };
         localStorage.setItem(getKeySettings(userId), JSON.stringify(newSettings));
     } catch(e) {}
 
-    // Nuvem
+    // 2. Nuvem
     try {
-        const current = await fetchSettings(userId);
+        const json = localStorage.getItem(getKeySettings(userId));
+        const current = json ? JSON.parse(json) : {}; // Recarrega estado mais fresco
         const newSettings = { ...current, ...settings };
-        await supabase.from('user_settings').upsert({
+        
+        const { error } = await supabase.from('user_settings').upsert({
             user_id: userId,
             theme: newSettings.theme,
             email: newSettings.email
         }, { onConflict: 'user_id' });
+        
+        if (error) throw error;
     } catch (err: any) {
-        console.warn('Erro ao salvar settings nuvem:', err.message);
+        logError('saveSettings (Cloud)', err);
     }
     return true;
 };
