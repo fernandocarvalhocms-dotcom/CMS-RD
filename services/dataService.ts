@@ -105,7 +105,7 @@ export const createUser = async (user: User): Promise<User> => {
 
   // 2. Tenta Salvar no Supabase (Sync Background)
   try {
-      // Verifica duplicidade nuvem antes de inserir para evitar erro 500 desnecessário
+      // Verifica duplicidade nuvem antes de inserir
       const { data: existing } = await supabase.from('app_users').select('id').eq('email', user.email).maybeSingle();
       
       if (!existing) {
@@ -144,12 +144,13 @@ export const fetchProjects = async (userId: string): Promise<Project[]> => {
     if (error) throw error;
 
     if (data) {
-        const projects = data.map((p: any) => ({
+        // Mapeamento correto das colunas do banco (id_contabil, cost_center) para o App
+        const projects: Project[] = data.map((p: any) => ({
             id: p.id,
             name: p.name,
-            code: p.code,
+            code: p.cost_center || p.code || '', // Fallback para manter compatibilidade se o banco variar
             client: p.client,
-            accountingId: p.accounting_id,
+            accountingId: p.id_contabil || p.accounting_id || '', // Fallback para id_contabil
             status: p.status
         }));
         // Atualiza Cache Local (Sync Down)
@@ -168,7 +169,6 @@ export const fetchProjects = async (userId: string): Promise<Project[]> => {
 export const saveProject = async (userId: string, project: Project): Promise<boolean> => {
   // 1. Salva Local PRIMEIRO (Escrita Local First)
   try {
-      // Recupera estado atual local
       const projectsJson = localStorage.getItem(getKeyProjects(userId));
       const projects: Project[] = projectsJson ? JSON.parse(projectsJson) : [];
       
@@ -183,15 +183,17 @@ export const saveProject = async (userId: string, project: Project): Promise<boo
 
   // 2. Tenta Nuvem (Sync Background)
   try {
+      // Mapeamento correto para as colunas do banco
       const payload = {
         id: project.id,
         user_id: userId,
         name: project.name,
-        code: project.code,
+        cost_center: project.code,        // Mapeado: App(code) -> DB(cost_center)
         client: project.client,
-        accounting_id: project.accountingId,
+        id_contabil: project.accountingId, // Mapeado: App(accountingId) -> DB(id_contabil)
         status: project.status
       };
+      
       const { error } = await supabase.from('projects').upsert(payload);
       if (error) throw error;
   } catch (err: any) {
@@ -226,7 +228,10 @@ export const deleteProject = async (projectId: string): Promise<boolean> => {
 };
 
 export const deleteAllProjects = async (userId: string): Promise<boolean> => {
+    // 1. Local
     localStorage.removeItem(getKeyProjects(userId));
+    
+    // 2. Nuvem
     try {
         await supabase.from('projects').delete().eq('user_id', userId);
     } catch(e) {
@@ -334,13 +339,11 @@ export const clearAllocationsForProject = async (userId: string, projectId: stri
     }
 
     // 2. Nuvem Update (Iterativo para garantir consistência)
-    // Nota: Em uma app real, faria isso via SQL Function ou Batch, mas aqui iteramos
     if (changed) {
         const updates = [];
         for (const [date, entry] of Object.entries(newAllocations)) {
             updates.push(saveAllocation(userId, date, entry));
         }
-        // Não aguardamos o Promise.all travar a UI, deixamos em background
         Promise.all(updates).catch(e => logError('clearAllocationsForProject (Cloud)', e));
     }
 };
@@ -381,7 +384,7 @@ export const saveSettings = async (userId: string, settings: { theme?: 'light' |
     // 2. Nuvem
     try {
         const json = localStorage.getItem(getKeySettings(userId));
-        const current = json ? JSON.parse(json) : {}; // Recarrega estado mais fresco
+        const current = json ? JSON.parse(json) : {}; 
         const newSettings = { ...current, ...settings };
         
         const { error } = await supabase.from('user_settings').upsert({
