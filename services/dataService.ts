@@ -145,13 +145,14 @@ export const fetchProjects = async (userId: string): Promise<Project[]> => {
 
     if (data) {
         // Mapeamento correto das colunas do banco (id_contabil, cost_center) para o App
+        // Status: Banco não tem coluna status, assumimos 'active' por padrão.
         const projects: Project[] = data.map((p: any) => ({
             id: p.id,
             name: p.name,
-            code: p.cost_center || p.code || '', // Fallback para manter compatibilidade se o banco variar
+            code: p.cost_center || p.code || '', // Fallback para manter compatibilidade
             client: p.client,
             accountingId: p.id_contabil || p.accounting_id || '', // Fallback para id_contabil
-            status: p.status
+            status: 'active' // Supabase schema não tem status, forçamos active
         }));
         // Atualiza Cache Local (Sync Down)
         localStorage.setItem(getKeyProjects(userId), JSON.stringify(projects));
@@ -183,15 +184,15 @@ export const saveProject = async (userId: string, project: Project): Promise<boo
 
   // 2. Tenta Nuvem (Sync Background)
   try {
-      // Mapeamento correto para as colunas do banco
+      // Mapeamento correto para as colunas do banco.
+      // IMPORTANTE: Removemos 'status' pois a coluna não existe no DB.
       const payload = {
         id: project.id,
         user_id: userId,
         name: project.name,
         cost_center: project.code,        // Mapeado: App(code) -> DB(cost_center)
         client: project.client,
-        id_contabil: project.accountingId, // Mapeado: App(accountingId) -> DB(id_contabil)
-        status: project.status
+        id_contabil: project.accountingId // Mapeado: App(accountingId) -> DB(id_contabil)
       };
       
       const { error } = await supabase.from('projects').upsert(payload);
