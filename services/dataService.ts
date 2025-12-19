@@ -1,37 +1,24 @@
 import { supabase } from './supabase';
-import type { User, Project, AllAllocations, DailyEntry, TimeShift } from '../types';
-import { parse, differenceInMinutes } from 'date-fns';
+import type { User, Project, AllAllocations, DailyEntry } from '../types';
 
-// Validação de UUID para evitar erros de cast no Postgres
+// ==========================================
+// CONSTANTES LOCAIS (Fallback & Cache)
+// ==========================================
+const KEY_USERS = 'cms_users_db_v1';
+const getKeyProjects = (userId: string) => `cms_data_${userId}_projects`;
+const getKeyAllocations = (userId: string) => `cms_data_${userId}_allocations`;
+const getKeySettings = (userId: string) => `cms_data_${userId}_settings`;
+
+// Helper para validação de UUID v4
 const isValidUUID = (uuid: string) => {
-  const regex = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
-  return typeof uuid === 'string' && regex.test(uuid);
+    const regex = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
+    return typeof uuid === 'string' && regex.test(uuid);
 };
 
-// Cálculo de totais para colunas de resumo no banco de dados
-const calculateTotals = (entry: DailyEntry) => {
-  let workedMinutes = 0;
-  const shifts = [entry.morning, entry.afternoon, entry.evening];
-  shifts.forEach((shift: TimeShift) => {
-    if (shift.start && shift.end) {
-      try {
-        const start = parse(shift.start, 'HH:mm', new Date());
-        const end = parse(shift.end, 'HH:mm', new Date());
-        if (end > start) workedMinutes += differenceInMinutes(end, start);
-      } catch (e) {}
-    }
-  });
-
-  const allocatedHours = entry.projectAllocations.reduce((sum, pa) => sum + (Number(pa.hours) || 0), 0);
-  return {
-    hours_worked: workedMinutes / 60,
-    hours_allocated: allocatedHours
-  };
-};
-
+// Helper para logs seguros
 const logError = (context: string, error: any) => {
-  const msg = error?.message || (typeof error === 'string' ? error : JSON.stringify(error));
-  console.error(`[DataService] ${context}:`, msg);
+    const msg = error?.message || JSON.stringify(error);
+    console.warn(`[DataService] ${context}:`, msg);
 };
 
 // ==========================================
@@ -39,7 +26,7 @@ const logError = (context: string, error: any) => {
 // ==========================================
 
 export const fetchUserById = async (userId: string): Promise<User | null> => {
-  if (!isValidUUID(userId)) return null;
+  // 1. Tenta Supabase (Leitura Nuvem First)
   try {
     const { data, error } = await supabase
       .from('app_users')
@@ -48,48 +35,112 @@ export const fetchUserById = async (userId: string): Promise<User | null> => {
       .maybeSingle();
 
     if (error) throw error;
-    if (data) return { id: data.id, name: data.name, email: data.email, password: data.password_hash };
+
+    if (data) {
+       return {
+            id: data.id,
+            name: data.name,
+            email: data.email,
+            password: data.password_hash 
+        };
+    }
   } catch (err) {
-    logError('fetchUserById', err);
+    logError('fetchUserById (Cloud)', err);
   }
+
+  // 2. Fallback Local
+  try {
+      const usersJson = localStorage.getItem(KEY_USERS);
+      const users: User[] = usersJson ? JSON.parse(usersJson) : [];
+      const localUser = users.find(u => u.id === userId);
+      if (localUser) return localUser;
+  } catch (e) {
+      console.error("Erro leitura local user:", e);
+  }
+
   return null;
 };
 
 export const loginUser = async (email: string, password: string): Promise<User> => {
-  const cleanEmail = email.trim().toLowerCase();
-  const { data, error } = await supabase
-    .from('app_users')
-    .select('*')
-    .eq('email', cleanEmail)
-    .maybeSingle();
+  // 1. Tenta Supabase (Leitura Nuvem First)
+  try {
+      const { data, error } = await supabase
+        .from('app_users')
+        .select('*')
+        .eq('email', email)
+        .maybeSingle();
+      
+      if (error) throw error;
 
-  if (error) throw error;
-  if (!data) throw new Error('Usuário não encontrado.');
-  if (data.password_hash !== password) throw new Error('Senha incorreta.');
+      if (data) {
+        if (data.password_hash !== password) throw new Error('Senha incorreta.');
+        return { id: data.id, name: data.name, email: data.email, password: data.password_hash };
+      }
+  } catch (err: any) {
+      if (err.message !== 'Senha incorreta.') {
+          logError('loginUser (Cloud)', err);
+      } else {
+          throw err;
+      }
+  }
 
-  return { id: data.id, name: data.name, email: data.email, password: data.password_hash };
+  // 2. Fallback Local
+  const usersJson = localStorage.getItem(KEY_USERS);
+  const users: User[] = usersJson ? JSON.parse(usersJson) : [];
+  const user = users.find(u => u.email?.toLowerCase() === email.toLowerCase());
+
+  if (user && user.password === password) return user;
+  
+  throw new Error('Usuário não encontrado ou erro de conexão.');
 };
 
 export const createUser = async (user: User): Promise<User> => {
-  const { error } = await supabase
-    .from('app_users')
-    .insert([{
-      id: user.id,
-      name: user.name,
-      email: user.email?.trim().toLowerCase(),
-      password_hash: user.password
-    }]);
+  // 1. Salva Localmente PRIMEIRO (Escrita Local First)
+  try {
+      const usersJson = localStorage.getItem(KEY_USERS);
+      const users: User[] = usersJson ? JSON.parse(usersJson) : [];
+      
+      // Verifica duplicidade local
+      if (!users.some(u => u.email === user.email)) {
+          users.push(user);
+          localStorage.setItem(KEY_USERS, JSON.stringify(users));
+      }
+  } catch(e) {
+      console.error("Erro ao salvar usuário localmente:", e);
+  }
 
-  if (error) throw error;
+  // 2. Tenta Salvar no Supabase (Sync Background)
+  try {
+      // Verifica duplicidade nuvem antes de inserir
+      const { data: existing } = await supabase.from('app_users').select('id').eq('email', user.email).maybeSingle();
+      
+      if (!existing) {
+          const { error } = await supabase
+            .from('app_users')
+            .insert([{
+                id: user.id,
+                name: user.name,
+                email: user.email,
+                password_hash: user.password
+            }]);
+
+          if (error) throw error;
+      }
+  } catch (err: any) {
+      logError('createUser (Cloud)', err);
+  }
+
   return user;
 };
+
+export const fetchUsers = async (): Promise<User[]> => { return []; };
 
 // ==========================================
 // PROJETOS
 // ==========================================
 
 export const fetchProjects = async (userId: string): Promise<Project[]> => {
-  if (!isValidUUID(userId)) return [];
+  // 1. Tenta Nuvem (Leitura Nuvem First)
   try {
     const { data, error } = await supabase
       .from('projects')
@@ -98,133 +149,237 @@ export const fetchProjects = async (userId: string): Promise<Project[]> => {
 
     if (error) throw error;
 
-    return data ? data.map((p: any) => ({
-      id: p.id,
-      name: p.name,
-      code: p.cost_center || '',
-      client: p.client,
-      accountingId: p.id_contabil || '',
-      status: p.status || 'active'
-    })) : [];
+    if (data) {
+        // Mapeamento correto das colunas do banco (id_contabil, cost_center) para o App
+        // Status: Banco não tem coluna status, assumimos 'active' por padrão.
+        const projects: Project[] = data.map((p: any) => ({
+            id: p.id,
+            name: p.name,
+            code: p.cost_center || p.code || '', // Fallback para manter compatibilidade
+            client: p.client,
+            accountingId: p.id_contabil || p.accounting_id || '', // Fallback para id_contabil
+            status: 'active' // Supabase schema não tem status, forçamos active
+        }));
+        // Atualiza Cache Local (Sync Down)
+        localStorage.setItem(getKeyProjects(userId), JSON.stringify(projects));
+        return projects;
+    }
   } catch (err) {
-    logError('fetchProjects', err);
-    throw err;
+      logError('fetchProjects (Cloud)', err);
   }
+
+  // 2. Fallback Local
+  const json = localStorage.getItem(getKeyProjects(userId));
+  return json ? JSON.parse(json) : [];
 };
 
 export const saveProject = async (userId: string, project: Project): Promise<boolean> => {
-  if (!isValidUUID(userId)) throw new Error("Sessão inválida.");
-
-  const payload: any = {
-    user_id: userId,
-    name: project.name,
-    cost_center: project.code,
-    client: project.client,
-    id_contabil: project.accountingId,
-    status: project.status
-  };
-
-  if (isValidUUID(project.id)) {
-    payload.id = project.id;
+  // 1. Salva Local PRIMEIRO (Escrita Local First)
+  try {
+      const projectsJson = localStorage.getItem(getKeyProjects(userId));
+      const projects: Project[] = projectsJson ? JSON.parse(projectsJson) : [];
+      
+      const index = projects.findIndex(p => p.id === project.id);
+      if (index >= 0) projects[index] = project;
+      else projects.push(project);
+      
+      localStorage.setItem(getKeyProjects(userId), JSON.stringify(projects));
+  } catch (e) { 
+      console.error("Erro crítico salvar projeto local:", e); 
   }
 
-  const { error } = await supabase.from('projects').upsert(payload);
-  if (error) {
-    logError('saveProject', error);
-    throw error;
+  // 2. Tenta Nuvem (Sync Background)
+  try {
+      // Validação Crítica de UUID para evitar erro 500 do Supabase
+      if (!isValidUUID(userId)) {
+          console.warn(`[DataService] saveProject: UserId inválido para nuvem (${userId}). Salvando apenas local.`);
+          return true;
+      }
+
+      // Mapeamento correto para as colunas do banco
+      const payload: any = {
+        user_id: userId,
+        name: project.name,
+        cost_center: project.code,        // Mapeado: App(code) -> DB(cost_center)
+        client: project.client,
+        id_contabil: project.accountingId // Mapeado: App(accountingId) -> DB(id_contabil)
+      };
+
+      // Só enviamos o ID se ele for um UUID válido.
+      // IDs gerados localmente (ex: Base64) quebram o tipo UUID do Postgres.
+      // Se omitirmos o ID, o Supabase gera um novo UUID automaticamente.
+      if (isValidUUID(project.id)) {
+          payload.id = project.id;
+      } else {
+          console.warn(`[DataService] saveProject: Project ID local (${project.id}) não é UUID válido. Deixando Supabase gerar novo ID.`);
+      }
+      
+      // Log para debug
+      console.log('[DataService] Enviando Projeto para Supabase:', payload);
+
+      const { error } = await supabase.from('projects').upsert(payload);
+      if (error) throw error;
+  } catch (err: any) {
+      logError('saveProject (Cloud)', err);
+      // Não retorna false para não travar a UI, pois salvou local
   }
   return true;
 };
 
 export const deleteProject = async (projectId: string): Promise<boolean> => {
-  if (!isValidUUID(projectId)) return true;
-  const { error } = await supabase.from('projects').delete().eq('id', projectId);
-  if (error) throw error;
-  return true;
+    // 1. Local
+    try {
+        const userId = localStorage.getItem('cms_user_id'); 
+        if (userId) {
+            const projectsJson = localStorage.getItem(getKeyProjects(userId));
+            if (projectsJson) {
+                const projects: Project[] = JSON.parse(projectsJson);
+                const newProjects = projects.filter(p => p.id !== projectId);
+                localStorage.setItem(getKeyProjects(userId), JSON.stringify(newProjects));
+            }
+        }
+    } catch (e) {}
+
+    // 2. Nuvem
+    try {
+        if (isValidUUID(projectId)) {
+            await supabase.from('projects').delete().eq('id', projectId);
+        } else {
+            console.warn('[DataService] deleteProject: ID inválido para deleção na nuvem:', projectId);
+        }
+    } catch (e) {
+        logError('deleteProject (Cloud)', e);
+    }
+    
+    return true;
 };
 
 export const deleteAllProjects = async (userId: string): Promise<boolean> => {
-  if (!isValidUUID(userId)) return true;
-  const { error } = await supabase.from('projects').delete().eq('user_id', userId);
-  if (error) throw error;
-  return true;
+    // 1. Local
+    localStorage.removeItem(getKeyProjects(userId));
+    
+    // 2. Nuvem
+    try {
+        if (isValidUUID(userId)) {
+             await supabase.from('projects').delete().eq('user_id', userId);
+        }
+    } catch(e) {
+        logError('deleteAllProjects (Cloud)', e);
+    }
+    return true;
 };
 
 // ==========================================
-// ALOCAÇÕES (Supabase 100% - Coluna 'data')
+// ALOCAÇÕES
 // ==========================================
 
 export const fetchAllocations = async (userId: string): Promise<AllAllocations> => {
-  if (!isValidUUID(userId)) return {};
+  // 1. Tenta Nuvem (Leitura Nuvem First)
   try {
     const { data, error } = await supabase
-      .from('allocations')
-      .select('work_date, data') // Corrigido para a coluna 'data' conforme solicitado
-      .eq('user_id', userId);
+        .from('allocations')
+        .select('date, data')
+        .eq('user_id', userId);
 
     if (error) throw error;
 
-    const allocations: AllAllocations = {};
     if (data) {
-      data.forEach((row: any) => {
-        if (row.work_date) {
-          allocations[row.work_date] = row.data; // Mapeamento work_date -> JSON data
-        }
-      });
+        const allocations: AllAllocations = {};
+        data.forEach((row: any) => {
+            allocations[row.date] = row.data;
+        });
+        // Atualiza Cache Local (Sync Down)
+        localStorage.setItem(getKeyAllocations(userId), JSON.stringify(allocations));
+        return allocations;
     }
-    return allocations;
   } catch (err) {
-    logError('fetchAllocations', err);
-    throw err;
+      logError('fetchAllocations (Cloud)', err);
   }
+
+  // 2. Fallback Local
+  const json = localStorage.getItem(getKeyAllocations(userId));
+  return json ? JSON.parse(json) : {};
 };
 
 export const saveAllocation = async (userId: string, date: string, entry: DailyEntry): Promise<boolean> => {
-  if (!isValidUUID(userId)) throw new Error("Sessão expirada.");
-
-  const { hours_worked, hours_allocated } = calculateTotals(entry);
-
-  const payload = {
-    user_id: userId,
-    work_date: date,
-    data: entry, // Salva no campo 'data' (JSONB)
-    hours_worked,
-    hours_allocated
-  };
-
-  const { error } = await supabase
-    .from('allocations')
-    .upsert(payload, { onConflict: 'user_id, work_date' });
-
-  if (error) {
-    logError('saveAllocation', error);
-    throw error;
+  // 1. Salva Local PRIMEIRO (Escrita Local First)
+  try {
+      const json = localStorage.getItem(getKeyAllocations(userId));
+      const all: AllAllocations = json ? JSON.parse(json) : {};
+      
+      all[date] = entry;
+      localStorage.setItem(getKeyAllocations(userId), JSON.stringify(all));
+  } catch(e) { 
+      console.error("Erro crítico salvar alocação local:", e); 
   }
+
+  // 2. Tenta Nuvem (Sync Background)
+  try {
+      if (!isValidUUID(userId)) {
+           return true;
+      }
+      const { error } = await supabase
+        .from('allocations')
+        .upsert({
+          user_id: userId,
+          date: date,
+          data: entry // Supabase converte JSON automaticamente
+        }, { onConflict: 'user_id, date' });
+
+      if (error) throw error;
+  } catch (err: any) {
+      logError(`saveAllocation dia ${date} (Cloud)`, err);
+  }
+  
   return true;
 };
 
 export const deleteAllocation = async (userId: string, date: string): Promise<boolean> => {
-  if (!isValidUUID(userId)) return true;
-  const { error } = await supabase.from('allocations').delete().eq('user_id', userId).eq('work_date', date);
-  if (error) throw error;
+  // 1. Local
+  try {
+      const json = localStorage.getItem(getKeyAllocations(userId));
+      if (json) {
+          const all = JSON.parse(json);
+          delete all[date];
+          localStorage.setItem(getKeyAllocations(userId), JSON.stringify(all));
+      }
+  } catch(e) {}
+
+  // 2. Nuvem
+  try {
+    if (isValidUUID(userId)) {
+        await supabase.from('allocations').delete().eq('user_id', userId).eq('date', date);
+    }
+  } catch(e) {
+      logError('deleteAllocation (Cloud)', e);
+  }
+  
   return true;
 };
 
 export const clearAllocationsForProject = async (userId: string, projectId: string, currentAllocations: AllAllocations): Promise<void> => {
-  const entriesToUpdate = Object.entries(currentAllocations).filter(([_, entry]) =>
-    entry.projectAllocations.some(pa => pa.projectId === projectId)
-  );
+    // 1. Local Update
+    const newAllocations = { ...currentAllocations };
+    let changed = false;
+    for (const date in newAllocations) {
+        const entry = newAllocations[date];
+        if (entry.projectAllocations.some(pa => pa.projectId === projectId)) {
+            entry.projectAllocations = entry.projectAllocations.filter(pa => pa.projectId !== projectId);
+            changed = true;
+        }
+    }
+    if (changed) {
+        localStorage.setItem(getKeyAllocations(userId), JSON.stringify(newAllocations));
+    }
 
-  if (entriesToUpdate.length > 0) {
-    const updates = entriesToUpdate.map(([date, entry]) => {
-      const updatedEntry = {
-        ...entry,
-        projectAllocations: entry.projectAllocations.filter(pa => pa.projectId !== projectId)
-      };
-      return saveAllocation(userId, date, updatedEntry);
-    });
-    await Promise.all(updates);
-  }
+    // 2. Nuvem Update (Iterativo para garantir consistência)
+    if (changed) {
+        const updates = [];
+        for (const [date, entry] of Object.entries(newAllocations)) {
+            updates.push(saveAllocation(userId, date, entry));
+        }
+        Promise.all(updates).catch(e => logError('clearAllocationsForProject (Cloud)', e));
+    }
 };
 
 // ==========================================
@@ -232,23 +387,51 @@ export const clearAllocationsForProject = async (userId: string, projectId: stri
 // ==========================================
 
 export const fetchSettings = async (userId: string): Promise<{ theme: 'light' | 'dark', email: string }> => {
-  if (!isValidUUID(userId)) return { theme: 'light', email: '' };
-  try {
-    const { data, error } = await supabase.from('user_settings').select('*').eq('user_id', userId).maybeSingle();
-    if (error) throw error;
-    if (data) return { theme: data.theme, email: data.email };
-  } catch (e) {
-    logError('fetchSettings', e);
-  }
-  return { theme: 'light', email: '' };
+    // 1. Nuvem
+    try {
+        const { data, error } = await supabase.from('user_settings').select('*').eq('user_id', userId).maybeSingle();
+        if (error) throw error;
+        
+        if (data) {
+            const settings = { theme: data.theme, email: data.email };
+            localStorage.setItem(getKeySettings(userId), JSON.stringify(settings));
+            return settings;
+        }
+    } catch(e) {
+        logError('fetchSettings (Cloud)', e);
+    }
+
+    // 2. Local
+    const json = localStorage.getItem(getKeySettings(userId));
+    return json ? JSON.parse(json) : { theme: 'light', email: '' };
 };
 
 export const saveSettings = async (userId: string, settings: { theme?: 'light' | 'dark', email?: string }): Promise<boolean> => {
-  if (!isValidUUID(userId)) return false;
-  const { error } = await supabase.from('user_settings').upsert({
-    user_id: userId,
-    ...settings
-  }, { onConflict: 'user_id' });
-  if (error) throw error;
-  return true;
+    // 1. Local
+    try {
+        const json = localStorage.getItem(getKeySettings(userId));
+        const current = json ? JSON.parse(json) : { theme: 'light', email: '' };
+        const newSettings = { ...current, ...settings };
+        localStorage.setItem(getKeySettings(userId), JSON.stringify(newSettings));
+    } catch(e) {}
+
+    // 2. Nuvem
+    try {
+        if (!isValidUUID(userId)) return true;
+
+        const json = localStorage.getItem(getKeySettings(userId));
+        const current = json ? JSON.parse(json) : {}; 
+        const newSettings = { ...current, ...settings };
+        
+        const { error } = await supabase.from('user_settings').upsert({
+            user_id: userId,
+            theme: newSettings.theme,
+            email: newSettings.email
+        }, { onConflict: 'user_id' });
+        
+        if (error) throw error;
+    } catch (err: any) {
+        logError('saveSettings (Cloud)', err);
+    }
+    return true;
 };
