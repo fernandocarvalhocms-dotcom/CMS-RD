@@ -85,7 +85,7 @@ export const createUser = async (user: User): Promise<User> => {
 export const fetchProjects = async (userId: string): Promise<Project[]> => {
   try {
     const { data, error } = await supabase
-      .from('projects')
+      .from('projects') 
       .select('*')
       .eq('user_id', userId);
 
@@ -97,7 +97,7 @@ export const fetchProjects = async (userId: string): Promise<Project[]> => {
         code: p.cost_center || '',
         client: p.client,
         accountingId: p.id_contabil || '',
-        status: 'active'
+        status: p.status || 'active'
     }));
   } catch (err) {
       logError('fetchProjects', err);
@@ -112,10 +112,10 @@ export const saveProject = async (userId: string, project: Project): Promise<boo
         name: project.name,
         cost_center: project.code,
         client: project.client,
-        id_contabil: project.accountingId
+        id_contabil: project.accountingId,
+        status: project.status
       };
 
-      // Se for um UUID válido, incluímos para Upsert
       const uuidRegex = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
       if (uuidRegex.test(project.id)) {
           payload.id = project.id;
@@ -137,7 +137,8 @@ export const bulkSaveProjects = async (userId: string, projectsToSave: any[]): P
             name: p.name,
             cost_center: p.code,
             client: p.client,
-            id_contabil: p.accountingId
+            id_contabil: p.accountingId,
+            status: 'active'
         }));
 
         const { error } = await supabase.from('projects').insert(payload);
@@ -179,14 +180,14 @@ export const fetchAllocations = async (userId: string): Promise<AllAllocations> 
   try {
     const { data, error } = await supabase
         .from('allocations')
-        .select('date, data')
+        .select('work_date, data')
         .eq('user_id', userId);
 
     if (error) throw error;
 
     const allocations: AllAllocations = {};
     (data || []).forEach((row: any) => {
-        allocations[row.date] = row.data;
+        allocations[row.work_date] = row.data;
     });
     return allocations;
   } catch (err) {
@@ -201,9 +202,9 @@ export const saveAllocation = async (userId: string, date: string, entry: DailyE
         .from('allocations')
         .upsert({
           user_id: userId,
-          date: date,
+          work_date: date,
           data: entry
-        }, { onConflict: 'user_id, date' });
+        }, { onConflict: 'user_id, work_date' });
 
       if (error) throw error;
       return true;
@@ -219,7 +220,7 @@ export const deleteAllocation = async (userId: string, date: string): Promise<bo
         .from('allocations')
         .delete()
         .eq('user_id', userId)
-        .eq('date', date);
+        .eq('work_date', date);
     
     if (error) throw error;
     return true;
@@ -276,7 +277,6 @@ export const fetchSettings = async (userId: string): Promise<{ theme: 'light' | 
 
 export const saveSettings = async (userId: string, settings: { theme?: 'light' | 'dark', email?: string }): Promise<boolean> => {
     try {
-        // Buscamos as configurações atuais primeiro para garantir o merge
         const current = await fetchSettings(userId);
         const newSettings = { ...current, ...settings };
         
