@@ -130,9 +130,10 @@ export const saveProject = async (userId: string, project: Project): Promise<boo
   }
 };
 
-export const bulkSaveProjects = async (userId: string, projectsToSave: any[]): Promise<boolean> => {
+export const bulkSaveProjects = async (userId: string, projectsToSave: Project[]): Promise<boolean> => {
     try {
         const payload = projectsToSave.map(p => ({
+            id: p.id,
             user_id: userId,
             name: p.name,
             cost_center: p.code,
@@ -141,7 +142,8 @@ export const bulkSaveProjects = async (userId: string, projectsToSave: any[]): P
             status: 'active'
         }));
 
-        const { error } = await supabase.from('projects').insert(payload);
+        // Usamos upsert para evitar erros de duplicidade se o projeto já existir
+        const { error } = await supabase.from('projects').upsert(payload);
         if (error) throw error;
         return true;
     } catch (err) {
@@ -198,13 +200,15 @@ export const fetchAllocations = async (userId: string): Promise<AllAllocations> 
 
 export const saveAllocation = async (userId: string, date: string, entry: DailyEntry): Promise<boolean> => {
   try {
+      // Certifique-se de que a tabela 'allocations' NÃO possui uma coluna project_id obrigatória.
+      // O modelo salva todo o objeto 'entry' (que contém as alocações) na coluna JSONB 'data'.
       const { error } = await supabase
         .from('allocations')
         .upsert({
           user_id: userId,
           work_date: date,
           data: entry
-        }, { onConflict: 'user_id, work_date' });
+        }, { onConflict: 'user_id,work_date' });
 
       if (error) throw error;
       return true;
