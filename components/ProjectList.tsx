@@ -1,10 +1,10 @@
 
 import React, { useState, useRef } from 'react';
 import type { Project } from '../types';
-import { saveProject } from '../services/dataService';
+import { saveProject, fetchProjects } from '../services/dataService';
 
 // Icons from lucide-react
-import { Edit, Upload, Trash2, ShieldAlert, CloudDownload, Loader2, Calendar } from 'lucide-react';
+import { Edit, Upload, Trash2, ShieldAlert, CloudDownload, Loader2 } from 'lucide-react';
 
 interface ProjectListProps {
   projects: Project[];
@@ -13,8 +13,8 @@ interface ProjectListProps {
   onImport: (file: File) => void;
   onDelete: (projectId: string) => void;
   onDeleteAll: () => void;
-  userId?: string; // Adicionado para permitir salvar inativação no DB
-  onRefresh?: () => void; // Adicionado para atualizar lista após sincronia
+  userId?: string;
+  onRefresh?: () => void;
 }
 
 const MONTHS = [
@@ -95,7 +95,7 @@ const ProjectList: React.FC<ProjectListProps> = ({ projects, onEdit, onToggleSta
 
   const handleGoogleSheetSync = async () => {
     if (!userId) {
-        alert("Erro de autenticação. Tente logar novamente.");
+        alert("Sessão inválida.");
         return;
     }
 
@@ -112,7 +112,6 @@ const ProjectList: React.FC<ProjectListProps> = ({ projects, onEdit, onToggleSta
       const text = await response.text();
       const rows = text.split('\n').map(line => parseCSVLine(line));
 
-      // Extrai projetos da Coluna D (index 3)
       const importedData = rows
         .filter((row, index) => {
             if (index === 0 || row.length < 4) return false;
@@ -131,16 +130,15 @@ const ProjectList: React.FC<ProjectListProps> = ({ projects, onEdit, onToggleSta
         }));
 
       if (importedData.length > 0) {
-        if (window.confirm(`Sincronizar ${importedData.length} projetos de ${sheetName}? Os projetos atuais do sistema serão marcados como INATIVOS.`)) {
-            // 1. Inativar projetos atuais
+        if (window.confirm(`Isso irá marcar todos os seus projetos atuais como INATIVOS e carregar apenas os ${importedData.length} projetos de ${sheetName}. Deseja continuar?`)) {
+            // 1. Inativar projetos ativos atuais
             const activeNow = projects.filter(p => p.status === 'active');
             for (const p of activeNow) {
                 await saveProject(userId, { ...p, status: 'inactive' });
             }
 
-            // 2. Importar novos (usando loop para garantir persistência no Supabase via dataService)
+            // 2. Importar novos projetos (upsert)
             for (const p of importedData) {
-                // Tenta encontrar projeto similar para manter ID se possível
                 const existing = projects.find(ep => ep.name === p.name && ep.client === p.client);
                 await saveProject(userId, {
                     ...p,
@@ -149,13 +147,13 @@ const ProjectList: React.FC<ProjectListProps> = ({ projects, onEdit, onToggleSta
             }
 
             if (onRefresh) onRefresh();
-            alert("Sincronização concluída!");
+            alert("Sincronização concluída com sucesso!");
         }
       } else {
-        alert(`Nenhum projeto encontrado na aba "${sheetName}".`);
+        alert(`Nenhum projeto válido encontrado na aba "${sheetName}".`);
       }
     } catch (error: any) {
-      alert(`Erro: ${error.message}`);
+      alert(`Erro na sincronização: ${error.message}`);
     } finally {
       setIsSyncing(false);
     }
@@ -166,9 +164,9 @@ const ProjectList: React.FC<ProjectListProps> = ({ projects, onEdit, onToggleSta
   return (
     <div className="space-y-6">
        <div className="bg-white dark:bg-gray-800 border border-green-200 dark:border-green-800 p-4 rounded-lg shadow-sm">
-          <h3 className="font-semibold text-green-700 dark:text-green-400 flex items-center mb-3">
+          <h3 className="font-semibold text-green-700 dark:text-green-400 flex items-center mb-3 text-sm">
             <CloudDownload size={20} className="mr-2"/> 
-            Sincronizar Mês (Google Sheets)
+            Sincronização de Projetos por Mês
           </h3>
           <div className="flex gap-2">
             <div className="relative flex-1">
@@ -193,22 +191,22 @@ const ProjectList: React.FC<ProjectListProps> = ({ projects, onEdit, onToggleSta
        </div>
 
        <div className="bg-gray-100 dark:bg-gray-700 p-4 rounded-lg space-y-2">
-            <h3 className="font-semibold text-gray-800 dark:text-white flex items-center text-sm"><Upload size={16} className="mr-2"/>Importar Excel Local</h3>
+            <h3 className="font-semibold text-gray-800 dark:text-white flex items-center text-xs"><Upload size={16} className="mr-2"/>Importar de Planilha Local</h3>
             <input type="file" ref={fileInputRef} onChange={handleFileChange} className="hidden" accept=".xlsx, .xls, .csv" />
-            <button onClick={() => fileInputRef.current?.click()} className="w-full mt-2 px-4 py-2 bg-gray-200 dark:bg-gray-600 text-gray-800 dark:text-white rounded-md text-sm font-medium">
-                Selecionar Arquivo
+            <button onClick={() => fileInputRef.current?.click()} className="w-full mt-2 px-4 py-2 bg-gray-200 dark:bg-gray-600 text-gray-800 dark:text-white rounded-md text-xs font-medium">
+                Selecionar Arquivo Excel
             </button>
         </div>
         
       <div className="bg-gray-100 dark:bg-gray-700 p-4 rounded-lg text-center">
-        <p className="text-lg text-gray-800 dark:text-white">Projetos Ativos no Mês</p>
+        <p className="text-sm text-gray-600 dark:text-gray-400">Projetos Vigentes</p>
         <p className="text-3xl font-bold text-orange-500 dark:text-orange-400">{activeProjectsCount}</p>
       </div>
 
       <div className="flex justify-center mb-4">
         <div className="bg-gray-200 dark:bg-gray-700 rounded-full p-1 flex">
-          <button onClick={() => setShowInactive(false)} className={`px-4 py-1 rounded-full text-sm font-semibold ${!showInactive ? 'bg-orange-500 text-white' : 'text-gray-600 dark:text-gray-300'}`}>Ativos</button>
-          <button onClick={() => setShowInactive(true)} className={`px-4 py-1 rounded-full text-sm font-semibold ${showInactive ? 'bg-orange-500 text-white' : 'text-gray-600 dark:text-gray-300'}`}>Inativos</button>
+          <button onClick={() => setShowInactive(false)} className={`px-4 py-1 rounded-full text-xs font-semibold ${!showInactive ? 'bg-orange-500 text-white' : 'text-gray-600 dark:text-gray-300'}`}>Ativos</button>
+          <button onClick={() => setShowInactive(true)} className={`px-4 py-1 rounded-full text-xs font-semibold ${showInactive ? 'bg-orange-500 text-white' : 'text-gray-600 dark:text-gray-300'}`}>Inativos</button>
         </div>
       </div>
 
@@ -238,8 +236,8 @@ const ProjectList: React.FC<ProjectListProps> = ({ projects, onEdit, onToggleSta
       </ul>
 
        <div className="mt-8 border-t border-red-500/30 pt-4">
-            <button onClick={handleDeleteAllClick} className="w-full mt-2 px-4 py-2 bg-red-800 text-white rounded-md font-semibold flex items-center justify-center">
-               <ShieldAlert size={18} className="mr-2"/> Limpar Todos os Projetos
+            <button onClick={handleDeleteAllClick} className="w-full mt-2 px-4 py-2 bg-red-800 text-white rounded-md font-semibold flex items-center justify-center text-sm">
+               <ShieldAlert size={18} className="mr-2"/> Limpar Base de Projetos
             </button>
         </div>
     </div>

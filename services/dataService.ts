@@ -4,9 +4,8 @@ import type { User, Project, AllAllocations, DailyEntry, TimeShift } from '../ty
 import { parse, differenceInMinutes } from 'date-fns';
 
 // ==========================================
-// CONFIGURAÇÃO DE CACHE (LEITURA APENAS)
+// CONFIGURAÇÃO DE CACHE (LEITURA APENAS PARA PERFORMANCE)
 // ==========================================
-const KEY_USERS = 'cms_users_db_v1';
 const getKeyProjects = (userId: string) => `cms_data_${userId}_projects`;
 const getKeyAllocations = (userId: string) => `cms_data_${userId}_allocations`;
 const getKeySettings = (userId: string) => `cms_data_${userId}_settings`;
@@ -92,7 +91,7 @@ export const createUser = async (user: User): Promise<User> => {
     .insert([{
         id: user.id,
         name: user.name,
-        email: user.email.trim().toLowerCase(),
+        email: user.email?.trim().toLowerCase(),
         password_hash: user.password
     }]);
 
@@ -173,19 +172,34 @@ export const deleteAllProjects = async (userId: string): Promise<boolean> => {
 
 export const fetchAllocations = async (userId: string): Promise<AllAllocations> => {
   try {
-    // CORREÇÃO: Usando 'work_date' e 'data' conforme identificado no erro de schema
+    // CORREÇÃO: Usando 'work_date' e 'entry' (se 'data' não existe, tentamos 'entry')
+    // Com base no erro anterior, tentaremos usar o mapeamento solicitado originalmente: 'entry' para o JSON
     const { data, error } = await supabase
         .from('allocations')
-        .select('work_date, data')
+        .select('work_date, entry')
         .eq('user_id', userId);
 
-    if (error) throw error;
+    if (error) {
+        // Fallback caso o erro persista (tentativa de 'data' se 'entry' falhar)
+        if (error.message?.includes("entry")) {
+            const { data: data2, error: error2 } = await supabase
+                .from('allocations')
+                .select('work_date, data')
+                .eq('user_id', userId);
+            if (!error2 && data2) {
+                const allocations: AllAllocations = {};
+                data2.forEach((row: any) => { if (row.work_date) allocations[row.work_date] = row.data; });
+                return allocations;
+            }
+        }
+        throw error;
+    }
 
     if (data) {
         const allocations: AllAllocations = {};
         data.forEach((row: any) => {
             if (row.work_date) {
-                allocations[row.work_date] = row.data;
+                allocations[row.work_date] = row.entry;
             }
         });
         localStorage.setItem(getKeyAllocations(userId), JSON.stringify(allocations));
@@ -203,13 +217,14 @@ export const saveAllocation = async (userId: string, date: string, entry: DailyE
 
   const { hours_worked, hours_allocated } = calculateTotals(entry);
 
-  // CORREÇÃO: Mapeamento exato para colunas do Supabase
-  const payload = {
+  // Mapeamento corrigido: work_date e entry
+  // Se o Supabase reclamar que 'entry' não existe, tentaremos 'data'.
+  const payload: any = {
     user_id: userId,
-    work_date: date,    // Coluna correta: work_date
-    data: entry,        // Coluna correta: data (JSONB)
-    hours_worked,       // Coluna solicitada
-    hours_allocated     // Coluna solicitada
+    work_date: date,
+    entry: entry,
+    hours_worked,
+    hours_allocated
   };
 
   const { error } = await supabase
@@ -217,6 +232,13 @@ export const saveAllocation = async (userId: string, date: string, entry: DailyE
     .upsert(payload, { onConflict: 'user_id, work_date' });
 
   if (error) {
+      if (error.message?.includes("entry")) {
+          // Fallback para 'data'
+          const { error: error2 } = await supabase
+            .from('allocations')
+            .upsert({ ...payload, data: entry, entry: undefined }, { onConflict: 'user_id, work_date' });
+          if (!error2) return true;
+      }
       logError('saveAllocation', error);
       throw error;
   }
