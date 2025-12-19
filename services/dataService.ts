@@ -15,7 +15,7 @@ const isValidUUID = (uuid: string) => {
     return typeof uuid === 'string' && regex.test(uuid);
 };
 
-// Helper para calcular total de horas de uma entry (usado para colunas de resumo)
+// Helper para calcular total de horas de uma entry
 const calculateTotalHoursFromEntry = (entry: DailyEntry): number => {
   let totalMinutes = 0;
   const shifts = [entry.morning, entry.afternoon, entry.evening];
@@ -72,8 +72,6 @@ export const fetchUserById = async (userId: string): Promise<User | null> => {
 
 export const loginUser = async (email: string, password: string): Promise<User> => {
   const cleanEmail = email.trim().toLowerCase();
-  console.log(`[DataService] Tentando login para: ${cleanEmail}`);
-
   const { data, error } = await supabase
     .from('app_users')
     .select('*')
@@ -84,14 +82,8 @@ export const loginUser = async (email: string, password: string): Promise<User> 
       logError('loginUser', error);
       throw new Error("Falha na conexão com o banco de dados.");
   }
-
-  if (!data) {
-      throw new Error('Usuário não encontrado. Verifique o email ou cadastre-se.');
-  }
-
-  if (data.password_hash !== password) {
-      throw new Error('Senha incorreta.');
-  }
+  if (!data) throw new Error('Usuário não encontrado.');
+  if (data.password_hash !== password) throw new Error('Senha incorreta.');
 
   return { id: data.id, name: data.name, email: data.email, password: data.password_hash };
 };
@@ -110,12 +102,6 @@ export const createUser = async (user: User): Promise<User> => {
       logError('createUser', error);
       throw new Error("Não foi possível criar sua conta na nuvem.");
   }
-  
-  const usersJson = localStorage.getItem(KEY_USERS);
-  const users: User[] = usersJson ? JSON.parse(usersJson) : [];
-  users.push(user);
-  localStorage.setItem(KEY_USERS, JSON.stringify(users));
-  
   return user;
 };
 
@@ -138,7 +124,7 @@ export const fetchProjects = async (userId: string): Promise<Project[]> => {
             code: p.cost_center || '', 
             client: p.client,
             accountingId: p.id_contabil || '', 
-            status: 'active'
+            status: p.status || 'active'
         }));
         localStorage.setItem(getKeyProjects(userId), JSON.stringify(projects));
         return projects;
@@ -158,7 +144,8 @@ export const saveProject = async (userId: string, project: Project): Promise<boo
     name: project.name,
     cost_center: project.code,        
     client: project.client,
-    id_contabil: project.accountingId 
+    id_contabil: project.accountingId,
+    status: project.status
   };
 
   if (isValidUUID(project.id)) {
@@ -195,7 +182,6 @@ export const deleteAllProjects = async (userId: string): Promise<boolean> => {
 
 export const fetchAllocations = async (userId: string): Promise<AllAllocations> => {
   try {
-    // Mapeamento corrigido conforme instrução: 'work_date' e 'entry'
     const { data, error } = await supabase
         .from('allocations')
         .select('work_date, entry') 
@@ -223,11 +209,9 @@ export const fetchAllocations = async (userId: string): Promise<AllAllocations> 
 export const saveAllocation = async (userId: string, date: string, entry: DailyEntry): Promise<boolean> => {
   if (!isValidUUID(userId)) throw new Error("Sessão expirada.");
 
-  // Calculando resumos conforme sugerido na estrutura robusta
   const hoursWorked = calculateTotalHoursFromEntry(entry);
   const hoursAllocated = entry.projectAllocations.reduce((sum, a) => sum + (Number(a.hours) || 0), 0);
 
-  // Mapeamento de colunas conforme instrução: work_date e entry
   const payload = {
     user_id: userId,
     work_date: date,
@@ -236,15 +220,13 @@ export const saveAllocation = async (userId: string, date: string, entry: DailyE
     hours_allocated: hoursAllocated
   };
 
-  console.log('[DataService] Salvando alocação:', payload);
-
   const { error } = await supabase
     .from('allocations')
     .upsert(payload, { onConflict: 'user_id, work_date' });
 
   if (error) {
       logError('saveAllocation', error);
-      throw new Error(`Falha ao sincronizar: ${error.message}`);
+      throw new Error(`Erro ao salvar no Supabase: ${error.message}`);
   }
   
   return true;
@@ -252,12 +234,8 @@ export const saveAllocation = async (userId: string, date: string, entry: DailyE
 
 export const deleteAllocation = async (userId: string, date: string): Promise<boolean> => {
   if (!isValidUUID(userId)) return true;
-  // Corrigido para usar work_date
   const { error } = await supabase.from('allocations').delete().eq('user_id', userId).eq('work_date', date);
-  if (error) {
-      logError('deleteAllocation', error);
-      throw new Error("Erro ao remover alocação na nuvem.");
-  }
+  if (error) throw error;
   return true;
 };
 
@@ -301,7 +279,6 @@ export const fetchSettings = async (userId: string): Promise<{ theme: 'light' | 
 
 export const saveSettings = async (userId: string, settings: { theme?: 'light' | 'dark', email?: string }): Promise<boolean> => {
     if (!isValidUUID(userId)) return false;
-    
     const json = localStorage.getItem(getKeySettings(userId));
     const current = json ? JSON.parse(json) : { theme: 'light', email: '' };
     const newSettings = { ...current, ...settings };
@@ -312,11 +289,7 @@ export const saveSettings = async (userId: string, settings: { theme?: 'light' |
         email: newSettings.email
     }, { onConflict: 'user_id' });
     
-    if (error) {
-        logError('saveSettings', error);
-        throw new Error("Erro ao salvar configurações na nuvem.");
-    }
-    
+    if (error) throw error;
     localStorage.setItem(getKeySettings(userId), JSON.stringify(newSettings));
     return true;
 };

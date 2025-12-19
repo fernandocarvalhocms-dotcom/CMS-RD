@@ -1,5 +1,6 @@
 import React, { useState, useRef } from 'react';
 import type { Project } from '../types';
+import { saveProject } from '../services/dataService';
 
 // Icons from lucide-react
 import { Edit, Upload, Trash2, ShieldAlert, CloudDownload, Loader2, Calendar } from 'lucide-react';
@@ -11,6 +12,8 @@ interface ProjectListProps {
   onImport: (file: File) => void;
   onDelete: (projectId: string) => void;
   onDeleteAll: () => void;
+  userId: string;
+  refreshProjects: () => void;
 }
 
 const MONTHS = [
@@ -18,52 +21,42 @@ const MONTHS = [
   'Julho', 'Agosto', 'Setembro', 'Outubro', 'Novembro', 'Dezembro'
 ];
 
-// ID da planilha fornecido pelo usuário
 const GOOGLE_SHEET_ID = '1SjHoaTjNMDPsdtOSLJB1Hte38G8w2yZCftz__Nc4d-s';
 
-// Helper para exibição inteligente (Mesma lógica do DayEntryForm)
 const getProjectDisplay = (project: Project) => {
     const isNameNumeric = /^\d/.test(project.name.trim());
     const isClientNumeric = /^\d/.test(project.client.trim());
-
-    // Construção dinâmica do subtítulo para ocultar "S/C" e "S/ID"
     const subtitleParts = [];
 
-    // Lógica inversa ao título: se o título é o Cliente, o subtítulo começa com o Nome, e vice-versa.
     if (isNameNumeric && !isClientNumeric) {
         subtitleParts.push(project.name);
     } else {
         subtitleParts.push(project.client);
     }
 
-    // Só adiciona o Centro de Custo se não for o padrão "S/C"
     if (project.code && project.code !== 'S/C') {
         subtitleParts.push(`CC: ${project.code}`);
     }
 
-    // Só adiciona o ID Contábil se não for o padrão "S/ID"
     if (project.accountingId && project.accountingId !== 'S/ID') {
         subtitleParts.push(`ID: ${project.accountingId}`);
     }
 
     const subtitle = subtitleParts.join(' • ');
 
-    // Se o Nome começa com número (código) e Cliente é texto, usamos Cliente como Título Principal
     if (isNameNumeric && !isClientNumeric) {
         return {
             title: project.client,
             subtitle: subtitle
         };
     }
-    
-    // Caso padrão
     return {
         title: project.name,
         subtitle: subtitle
     };
 };
 
-const ProjectList: React.FC<ProjectListProps> = ({ projects, onEdit, onToggleStatus, onImport, onDelete, onDeleteAll }) => {
+const ProjectList: React.FC<ProjectListProps> = ({ projects, onEdit, onToggleStatus, onImport, onDelete, onDeleteAll, userId, refreshProjects }) => {
   const [showInactive, setShowInactive] = useState(false);
   const [selectedMonth, setSelectedMonth] = useState(new Date().getMonth());
   const [isSyncing, setIsSyncing] = useState(false);
@@ -89,16 +82,14 @@ const ProjectList: React.FC<ProjectListProps> = ({ projects, onEdit, onToggleSta
 
   const handleDeleteProject = (e: React.MouseEvent, projectId: string, projectName: string) => {
       e.preventDefault();
-      e.stopPropagation(); // Garante que o clique não propague para o item da lista
+      e.stopPropagation();
       if (window.confirm(`Tem certeza que deseja excluir o projeto "${projectName}"?`)) {
           onDelete(projectId);
       }
   };
 
   const parseCSVLine = (text: string) => {
-    const re_valid = /^\s*(?:'[^'\\]*(?:\\[\S\s][^'\\]*)*'|"[^"\\]*(?:\\[\S\s][^"\\]*)*"|[^,'"\s\\]*(?:\s+[^,'"\s\\]+)*)\s*(?:,\s*(?:'[^'\\]*(?:\\[\S\s][^'\\]*)*'|"[^"\\]*(?:\\[\S\s][^"\\]*)*"|[^,'"\s\\]*(?:\s+[^,'"\s\\]+)*)\s*)*$/;
     const re_value = /(?!\s*$)\s*(?:'([^'\\]*(?:\\[\S\s][^'\\]*)*)'|"([^"\\]*(?:\\[\S\s][^"\\]*)*)"|([^,'"\s\\]*(?:\s+[^,'"\s\\]+)*))\s*(?:,|$)/g;
-    
     const a = [];
     text.replace(re_value, function(m0, m1, m2, m3) {
       if (m1 !== undefined) a.push(m1.replace(/\\'/g, "'"));
@@ -106,7 +97,6 @@ const ProjectList: React.FC<ProjectListProps> = ({ projects, onEdit, onToggleSta
       else if (m3 !== undefined) a.push(m3);
       return '';
     });
-    if (/,\s*$/.test(text)) a.push('');
     return a;
   };
 
@@ -119,75 +109,53 @@ const ProjectList: React.FC<ProjectListProps> = ({ projects, onEdit, onToggleSta
       const url = `https://docs.google.com/spreadsheets/d/${GOOGLE_SHEET_ID}/gviz/tq?tqx=out:csv&sheet=${encodedSheetName}`;
       
       const response = await fetch(url);
+      if (!response.ok) throw new Error(`Aba "${sheetName}" não encontrada.`);
       
-      if (!response.ok) {
-         throw new Error(`Não foi possível acessar a aba "${sheetName}". Verifique se ela existe na planilha.`);
-      }
-      
-      const buffer = await response.arrayBuffer();
-      const decoder = new TextDecoder('utf-8');
-      const text = decoder.decode(buffer);
-
-      if (text.trim().startsWith('<!DOCTYPE html>') || text.includes('google.com/accounts')) {
-          throw new Error(`A aba "${sheetName}" não foi encontrada ou a planilha não está pública.`);
-      }
-
+      const text = await response.text();
       const rows = text.split('\n').map(line => parseCSVLine(line));
 
-      const importedProjects: Project[] = rows
+      const importedProjectsData = rows
         .filter((row, index) => {
-            // IGNORA A PRIMEIRA LINHA (CABEÇALHO - D1)
-            if (index === 0) return false;
-
-            if (row.length < 4) return false;
-            const colD = row[3] ? row[3].trim() : '';
-            if (colD.length === 0) return false;
-            
-            const lowerD = colD.toLowerCase();
-            // Mantém verificações de segurança para garantir que não importamos outros cabeçalhos ou totais perdidos
-            const headers = ['projeto', 'operação', 'operacao', 'descrição', 'descricao', 'nome do projeto'];
-            if (headers.includes(lowerD)) return false;
-            if (lowerD.startsWith('total') || lowerD.startsWith('subtotal')) return false;
+            if (index === 0 || row.length < 4) return false;
+            const name = row[3]?.trim();
+            if (!name) return false;
+            const lower = name.toLowerCase();
+            if (['projeto', 'descrição', 'total', 'subtotal'].some(kw => lower.includes(kw))) return false;
             return true;
         })
-        .map((row, index) => {
-           const clean = (val: string) => val ? val.trim() : '';
-           const code = clean(row[0]) || 'S/C';
-           const accountingId = clean(row[1]) || 'S/ID';
-           const client = clean(row[2]) || 'Geral';
-           const name = clean(row[3]); 
+        .map(row => ({
+            code: row[0]?.trim() || 'S/C',
+            accountingId: row[1]?.trim() || 'S/ID',
+            client: row[2]?.trim() || 'Geral',
+            name: row[3]?.trim(),
+        }));
 
-           return {
-            id: `gsheet-${selectedMonth}-${index}-${Date.now()}`,
-            code,
-            accountingId,
-            client,
-            name,
-            status: 'active',
-          };
-        });
-
-      if (importedProjects.length > 0) {
-        const header = "Centro de custo,ID contabil,Projeto,cliente";
-        const escapeCsv = (val: string) => {
-            if (val.includes(',') || val.includes('"') || val.includes('\n')) {
-                return `"${val.replace(/"/g, '""')}"`;
+      if (importedProjectsData.length > 0) {
+        // CORREÇÃO: Inativar projetos ativos atuais antes da sincronização do mês
+        if (window.confirm(`Isso irá inativar os projetos atuais e mostrar apenas os projetos da aba ${sheetName}. Continuar?`)) {
+            const currentActive = projects.filter(p => p.status === 'active');
+            for (const p of currentActive) {
+                await saveProject(userId, { ...p, status: 'inactive' });
             }
-            return val;
-        };
-        const csvContent = '\uFEFF' + [
-            header,
-            ...importedProjects.map(p => `${escapeCsv(p.code)},${escapeCsv(p.accountingId)},${escapeCsv(p.name)},${escapeCsv(p.client)}`)
-        ].join('\n');
-        const blob = new Blob([csvContent], { type: 'text/csv;charset=utf-8' });
-        const file = new File([blob], `importacao_${sheetName}.csv`);
-        onImport(file);
+
+            // Inserir/Atualizar os novos
+            for (const data of importedProjectsData) {
+                const existing = projects.find(p => p.name === data.name && p.code === data.code);
+                await saveProject(userId, {
+                    id: existing ? existing.id : `gsheet-${selectedMonth}-${Date.now()}-${Math.random()}`,
+                    ...data,
+                    name: data.name!,
+                    status: 'active'
+                });
+            }
+            refreshProjects();
+            alert(`${importedProjectsData.length} projetos sincronizados para ${sheetName}.`);
+        }
       } else {
-        alert(`Nenhum projeto válido encontrado na coluna D da aba "${sheetName}".`);
+        alert("Nenhum projeto encontrado.");
       }
     } catch (error: any) {
-      console.error(error);
-      alert(`Erro na sincronização: ${error.message || 'Verifique a conexão e se a planilha é pública.'}`);
+      alert(`Erro: ${error.message}`);
     } finally {
       setIsSyncing(false);
     }
@@ -197,38 +165,30 @@ const ProjectList: React.FC<ProjectListProps> = ({ projects, onEdit, onToggleSta
 
   return (
     <div className="space-y-6">
-       
-       {/* Google Sheets Import Section */}
        <div className="bg-white dark:bg-gray-800 border border-green-200 dark:border-green-800 p-4 rounded-lg shadow-sm">
           <h3 className="font-semibold text-green-700 dark:text-green-400 flex items-center mb-3">
             <CloudDownload size={20} className="mr-2"/> 
             Sincronizar com Google Sheets
           </h3>
           <p className="text-xs text-gray-500 dark:text-gray-400 mb-4">
-             Busca projetos na aba <strong>{MONTHS[selectedMonth]}</strong> da planilha online. <br/>
-             <span className="opacity-75">Lendo operações da <strong>Coluna D</strong>.</span>
+             Busca projetos na aba <strong>{MONTHS[selectedMonth]}</strong>. Os projetos atuais serão marcados como inativos.
           </p>
-          
           <div className="flex gap-2">
             <div className="relative flex-1">
-                <div className="absolute inset-y-0 left-0 pl-3 flex items-center pointer-events-none">
-                  <Calendar size={16} className="text-gray-500" />
-                </div>
                 <select
                     value={selectedMonth}
                     onChange={(e) => setSelectedMonth(Number(e.target.value))}
-                    className="block w-full pl-10 pr-3 py-2 text-sm bg-gray-50 dark:bg-gray-900 border border-gray-300 dark:border-gray-600 rounded-md focus:ring-green-500 focus:border-green-500 text-gray-900 dark:text-white"
+                    className="block w-full pl-3 pr-3 py-2 text-sm bg-gray-50 dark:bg-gray-900 border border-gray-300 dark:border-gray-600 rounded-md text-gray-900 dark:text-white"
                 >
                     {MONTHS.map((month, index) => (
                         <option key={index} value={index}>{month}</option>
                     ))}
                 </select>
             </div>
-            
             <button
                 onClick={handleGoogleSheetSync}
                 disabled={isSyncing}
-                className="px-4 py-2 bg-green-600 text-white text-sm rounded-md hover:bg-green-500 transition-colors font-semibold flex items-center disabled:opacity-70 disabled:cursor-not-allowed min-w-[130px] justify-center"
+                className="px-4 py-2 bg-green-600 text-white text-sm rounded-md hover:bg-green-500 font-semibold flex items-center disabled:opacity-70 min-w-[130px] justify-center"
             >
                 {isSyncing ? <Loader2 size={16} className="animate-spin mr-2"/> : <CloudDownload size={16} className="mr-2"/>}
                 {isSyncing ? 'Buscando...' : 'Sincronizar'}
@@ -236,12 +196,8 @@ const ProjectList: React.FC<ProjectListProps> = ({ projects, onEdit, onToggleSta
           </div>
        </div>
 
-       {/* Existing Excel Import */}
        <div className="bg-gray-100 dark:bg-gray-700 p-4 rounded-lg space-y-2">
             <h3 className="font-semibold text-gray-800 dark:text-white flex items-center text-sm"><Upload size={16} className="mr-2"/>Importar via Excel (Manual)</h3>
-            <p className="text-xs text-gray-600 dark:text-gray-400">
-                Arquivo (.xlsx) com colunas: Centro de custo, ID contabil, Projeto, cliente.
-            </p>
             <input
                 type="file"
                 ref={fileInputRef}
@@ -278,6 +234,7 @@ const ProjectList: React.FC<ProjectListProps> = ({ projects, onEdit, onToggleSta
           </button>
         </div>
       </div>
+
       {filteredProjects.length === 0 ? (
         <p className="text-center text-gray-500 dark:text-gray-400">Nenhum projeto {showInactive ? 'inativo' : 'ativo'}.</p>
       ) : (
@@ -287,16 +244,13 @@ const ProjectList: React.FC<ProjectListProps> = ({ projects, onEdit, onToggleSta
             return (
                 <li key={project.id} className="p-4 flex justify-between items-center bg-gray-100 dark:bg-gray-700 my-2 rounded-lg">
                   <div className="flex-1 min-w-0 pr-4">
-                    {/* TÍTULO GRANDE (Nome Real ou Cliente se o nome for código) */}
                     <p className="font-bold text-lg text-gray-800 dark:text-white truncate">{display.title}</p>
-                    
-                    {/* SUBTÍTULO com detalhes */}
                     <p className="text-sm text-gray-500 dark:text-gray-400 truncate mt-1">
                       {display.subtitle}
                     </p>
                   </div>
                   <div className="flex items-center space-x-3">
-                    <label htmlFor={`status-${project.id}`} className="flex items-center cursor-pointer" title={project.status === 'active' ? 'Marcar como inativo' : 'Marcar como ativo'}>
+                    <label htmlFor={`status-${project.id}`} className="flex items-center cursor-pointer">
                       <div className="relative">
                         <input 
                           type="checkbox" 
@@ -309,14 +263,12 @@ const ProjectList: React.FC<ProjectListProps> = ({ projects, onEdit, onToggleSta
                         <div className={`dot absolute left-1 top-1 bg-white w-6 h-6 rounded-full transition-transform ${project.status === 'active' ? 'transform translate-x-6' : ''}`}></div>
                       </div>
                     </label>
-                    <button onClick={() => onEdit(project)} className="text-gray-500 dark:text-gray-400 hover:text-orange-500 dark:hover:text-orange-400 transition-colors" title="Editar">
+                    <button onClick={() => onEdit(project)} className="text-gray-500 dark:text-gray-400 hover:text-orange-500 transition-colors">
                       <Edit size={20} />
                     </button>
                      <button 
                         onClick={(e) => handleDeleteProject(e, project.id, project.name)} 
-                        className="text-gray-500 dark:text-gray-400 hover:text-red-500 transition-colors" 
-                        title="Excluir"
-                        type="button"
+                        className="text-gray-500 dark:text-gray-400 hover:text-red-500 transition-colors"
                      >
                       <Trash2 size={20} />
                     </button>
@@ -333,7 +285,6 @@ const ProjectList: React.FC<ProjectListProps> = ({ projects, onEdit, onToggleSta
             >
                <ShieldAlert size={18} className="mr-2"/> Excluir Todos os Projetos
             </button>
-            <p className="text-xs text-center text-red-500 dark:text-red-400 mt-2">Cuidado: Esta ação é irreversível e removerá todos os projetos da aplicação.</p>
         </div>
     </div>
   );

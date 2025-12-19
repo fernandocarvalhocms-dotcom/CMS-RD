@@ -1,6 +1,6 @@
 import React, { useState, useMemo, useCallback } from 'react';
 import type { DailyEntry, Project, ProjectTimeAllocation, TimeShift } from '../types';
-import { Plus, Trash2, Mic, Copy, Calculator, FastForward, CheckSquare, Square, Eraser } from 'lucide-react';
+import { Plus, Trash2, Mic, Copy, Calculator, FastForward, CheckSquare, Square, Eraser, Loader2, AlertCircle } from 'lucide-react';
 import { parse, differenceInMinutes, startOfMonth, endOfMonth, eachDayOfInterval, format, startOfWeek, endOfWeek, isSameMonth, isSameDay, addMonths, subMonths } from 'date-fns';
 import { ptBR } from 'date-fns/locale';
 import { decimalHoursToHHMM, hhmmToDecimalHours } from '../utils/formatters';
@@ -15,6 +15,7 @@ interface DayEntryFormProps {
   onDelete: () => void;
   projects: Project[];
   previousEntry: DailyEntry | null;
+  isSaving?: boolean;
 }
 
 const SHIFT_NAMES = { morning: 'Manhã', afternoon: 'Tarde', evening: 'Noite' };
@@ -22,7 +23,6 @@ const SHIFT_KEYS = ['morning', 'afternoon', 'evening'] as const;
 
 const getProjectDisplay = (project: Project | undefined) => {
     if (!project) return { title: 'Projeto não encontrado', subtitle: '' };
-
     const isNameNumeric = /^\d/.test(project.name.trim());
     const isClientNumeric = /^\d/.test(project.client.trim());
 
@@ -32,14 +32,13 @@ const getProjectDisplay = (project: Project | undefined) => {
             subtitle: `${project.name} • CC: ${project.code}`
         };
     }
-    
     return {
         title: project.name,
         subtitle: `${project.client} • CC: ${project.code}`
     };
 };
 
-const DayEntryForm: React.FC<DayEntryFormProps> = ({ initialEntry, onSave, onReplicate, onDelete, projects, previousEntry }) => {
+const DayEntryForm: React.FC<DayEntryFormProps> = ({ initialEntry, onSave, onReplicate, onDelete, projects, previousEntry, isSaving }) => {
   const [shifts, setShifts] = useState<{
     morning: TimeShift;
     afternoon: TimeShift;
@@ -56,12 +55,9 @@ const DayEntryForm: React.FC<DayEntryFormProps> = ({ initialEntry, onSave, onRep
   const [projectAllocations, setProjectAllocations] = useState<ProjectTimeAllocation[]>(initialEntry?.projectAllocations || []);
   const [isProjectSelectorOpen, setIsProjectSelectorOpen] = useState(false);
   const [isVoiceModalOpen, setIsVoiceModalOpen] = useState(false);
-  
   const [isDistributeModalOpen, setIsDistributeModalOpen] = useState(false);
   const [selectedProjectsForDist, setSelectedProjectsForDist] = useState<string[]>([]);
   const [distSearchTerm, setDistSearchTerm] = useState('');
-
-  // Replicate Calendar Logic
   const [isReplicateModalOpen, setIsReplicateModalOpen] = useState(false);
   const [replicationMonth, setReplicationMonth] = useState(new Date());
   const [selectedReplicationDates, setSelectedReplicationDates] = useState<Date[]>([]);
@@ -72,7 +68,6 @@ const DayEntryForm: React.FC<DayEntryFormProps> = ({ initialEntry, onSave, onRep
       return acc;
     }, {} as Record<string, Project>);
   }, [projects]);
-
 
   const calculateTotalHours = useCallback((currentShifts: typeof shifts) => {
     let totalMinutes = 0;
@@ -85,9 +80,7 @@ const DayEntryForm: React.FC<DayEntryFormProps> = ({ initialEntry, onSave, onRep
           if (!isNaN(startTime.getTime()) && !isNaN(endTime.getTime()) && endTime > startTime) {
             totalMinutes += differenceInMinutes(endTime, startTime);
           }
-        } catch (e) {
-          // Ignore
-        }
+        } catch (e) {}
       }
     });
     return totalMinutes / 60;
@@ -95,7 +88,6 @@ const DayEntryForm: React.FC<DayEntryFormProps> = ({ initialEntry, onSave, onRep
 
   const totalWorkedHours = useMemo(() => calculateTotalHours(shifts), [shifts, calculateTotalHours]);
   const totalAllocatedHours = useMemo(() => projectAllocations.reduce((sum, alloc) => sum + (Number(alloc.hours) || 0), 0), [projectAllocations]);
-  
   const hoursMatch = Math.abs(totalWorkedHours - totalAllocatedHours) < 0.01;
   
   const handleShiftChange = (shiftName: 'morning' | 'afternoon' | 'evening', field: 'start' | 'end', value: string) => {
@@ -123,6 +115,7 @@ const DayEntryForm: React.FC<DayEntryFormProps> = ({ initialEntry, onSave, onRep
   
   const handleSaveClick = (e: React.MouseEvent) => {
     e.preventDefault();
+    if (!hoursMatch) return;
     onSave({ ...shifts, projectAllocations });
   };
   
@@ -134,7 +127,6 @@ const DayEntryForm: React.FC<DayEntryFormProps> = ({ initialEntry, onSave, onRep
         evening: data.evening || prev.evening,
       }));
     }
-
     if (data.projectAllocations && data.projectAllocations.length > 0) {
         setProjectAllocations(data.projectAllocations);
     }
@@ -142,7 +134,7 @@ const DayEntryForm: React.FC<DayEntryFormProps> = ({ initialEntry, onSave, onRep
   
   const handleCopyPreviousDay = () => {
       if (!previousEntry) return;
-      if (window.confirm("Deseja copiar o preenchimento do dia anterior? Isso substituirá os dados atuais.")) {
+      if (window.confirm("Deseja copiar o preenchimento do dia anterior?")) {
           setShifts({
               morning: { ...previousEntry.morning },
               afternoon: { ...previousEntry.afternoon },
@@ -152,11 +144,8 @@ const DayEntryForm: React.FC<DayEntryFormProps> = ({ initialEntry, onSave, onRep
       }
   };
 
-  // --- HANDLERS SIMPLIFICADOS ---
-
   const handleClearDay = (e: React.MouseEvent) => {
     e.preventDefault();
-    // Apenas zera os estados, sem perguntas.
     setShifts({
         morning: { start: '', end: '' },
         afternoon: { start: '', end: '' },
@@ -165,53 +154,29 @@ const DayEntryForm: React.FC<DayEntryFormProps> = ({ initialEntry, onSave, onRep
     setProjectAllocations([]);
   };
 
-  // --- FIM HANDLERS SIMPLIFICADOS ---
-
-  // --- Distribution Logic ---
   const toggleProjectSelection = (projectId: string) => {
       setSelectedProjectsForDist(prev => 
-          prev.includes(projectId) 
-          ? prev.filter(id => id !== projectId) 
-          : [...prev, projectId]
+          prev.includes(projectId) ? prev.filter(id => id !== projectId) : [...prev, projectId]
       );
   };
 
   const applyDistribution = () => {
-      if (selectedProjectsForDist.length === 0) return;
-      if (totalWorkedHours === 0) {
-          alert("Preencha as horas trabalhadas primeiro.");
-          return;
-      }
-
+      if (selectedProjectsForDist.length === 0 || totalWorkedHours === 0) return;
       const hoursPerProject = totalWorkedHours / selectedProjectsForDist.length;
-      const newAllocations: ProjectTimeAllocation[] = selectedProjectsForDist.map(pid => ({
-          projectId: pid,
-          hours: hoursPerProject
-      }));
-
-      setProjectAllocations(newAllocations);
+      setProjectAllocations(selectedProjectsForDist.map(pid => ({ projectId: pid, hours: hoursPerProject })));
       setIsDistributeModalOpen(false);
-      setSelectedProjectsForDist([]); // Reset
+      setSelectedProjectsForDist([]);
   };
 
-  // --- Replicate Logic with Calendar ---
   const toggleReplicationDate = (day: Date) => {
       setSelectedReplicationDates(prev => {
           const exists = prev.some(d => isSameDay(d, day));
-          if (exists) {
-              return prev.filter(d => !isSameDay(d, day));
-          } else {
-              return [...prev, day];
-          }
+          return exists ? prev.filter(d => !isSameDay(d, day)) : [...prev, day];
       });
   };
 
   const handleConfirmReplicate = () => {
-      if (!onReplicate) return;
-      if (selectedReplicationDates.length === 0) {
-          alert("Selecione pelo menos um dia para replicar.");
-          return;
-      }
+      if (!onReplicate || selectedReplicationDates.length === 0) return;
       onReplicate({ ...shifts, projectAllocations }, selectedReplicationDates);
       setIsReplicateModalOpen(false);
       setSelectedReplicationDates([]);
@@ -226,14 +191,6 @@ const DayEntryForm: React.FC<DayEntryFormProps> = ({ initialEntry, onSave, onRep
       ));
   }, [projects, distSearchTerm]);
 
-
-  const getReplicationCalendarDays = () => {
-      const start = startOfWeek(startOfMonth(replicationMonth), { weekStartsOn: 0 });
-      const end = endOfWeek(endOfMonth(replicationMonth), { weekStartsOn: 0 });
-      return eachDayOfInterval({ start, end });
-  };
-
-
   return (
     <>
       <div className="p-4 space-y-6">
@@ -245,21 +202,17 @@ const DayEntryForm: React.FC<DayEntryFormProps> = ({ initialEntry, onSave, onRep
                     <button 
                         type="button"
                         onClick={handleCopyPreviousDay}
-                        className="flex items-center gap-2 px-3 py-1.5 text-xs font-medium bg-gray-200 dark:bg-gray-600 text-gray-800 dark:text-white rounded-md hover:bg-gray-300 dark:hover:bg-gray-500 transition-colors"
-                        title="Copiar do dia anterior"
+                        className="flex items-center gap-2 px-3 py-1.5 text-xs font-medium bg-gray-200 dark:bg-gray-600 text-gray-800 dark:text-white rounded-md"
                     >
-                        <Copy size={14} />
-                        Repetir Anterior
+                        <Copy size={14} /> Repetir Anterior
                     </button>
                 )}
                 <button 
                     type="button"
                     onClick={() => setIsVoiceModalOpen(true)}
-                    className="flex items-center gap-2 px-3 py-1.5 text-sm bg-orange-600 text-white rounded-md hover:bg-orange-500 transition-colors"
-                    title="Preencher com comando de voz"
+                    className="flex items-center gap-2 px-3 py-1.5 text-sm bg-orange-600 text-white rounded-md"
                 >
-                    <Mic size={16} />
-                    Voz
+                    <Mic size={16} /> Voz
                 </button>
              </div>
           </div>
@@ -298,18 +251,11 @@ const DayEntryForm: React.FC<DayEntryFormProps> = ({ initialEntry, onSave, onRep
               {projectAllocations.map((alloc, index) => {
                   const project = projectsById[alloc.projectId];
                   const display = getProjectDisplay(project);
-                  
                   return (
                     <div key={index} className="flex items-center gap-3 bg-white dark:bg-gray-800 border border-gray-200 dark:border-gray-600 p-3 rounded-md shadow-sm">
                         <div className="flex-1 min-w-0">
-                            {/* Título Principal Grande */}
-                            <p className="text-xl font-bold text-gray-900 dark:text-white leading-tight truncate">
-                                {display.title}
-                            </p>
-                            {/* Subtítulo Pequeno */}
-                            <p className="text-xs text-gray-500 dark:text-gray-400 truncate mt-1">
-                                {display.subtitle}
-                            </p>
+                            <p className="text-xl font-bold text-gray-900 dark:text-white leading-tight truncate">{display.title}</p>
+                            <p className="text-xs text-gray-500 dark:text-gray-400 truncate mt-1">{display.subtitle}</p>
                         </div>
                         <input 
                             type="time" 
@@ -332,52 +278,46 @@ const DayEntryForm: React.FC<DayEntryFormProps> = ({ initialEntry, onSave, onRep
               <p className="font-semibold">
                   Total Apropriado: {decimalHoursToHHMM(totalAllocatedHours)} / {decimalHoursToHHMM(totalWorkedHours)}
               </p>
-              { totalWorkedHours > 0 && !hoursMatch && <p className="text-xs mt-1">As horas apropriadas devem ser iguais às horas trabalhadas.</p>}
+              { totalWorkedHours > 0 && !hoursMatch && <div className="flex items-center justify-center gap-1 text-xs mt-1"><AlertCircle size={12}/> As horas apropriadas devem ser iguais às trabalhadas.</div>}
           </div>
         </div>
         
         <div className="flex flex-col gap-4">
-            {/* Opção de Excluir removida conforme solicitado */}
-            
             <button 
                 type="button"
                 onClick={handleClearDay} 
-                className="w-full px-4 py-3 bg-gray-500 text-white rounded-md font-semibold transition-colors hover:bg-gray-600 flex items-center justify-center gap-2"
+                className="w-full px-4 py-3 bg-gray-500 text-white rounded-md font-semibold hover:bg-gray-600 flex items-center justify-center gap-2"
             >
-                <Eraser size={18} />
-                Limpar Tela
+                <Eraser size={18} /> Limpar Tela
             </button>
             
             <div className="flex gap-2">
-                 {/* Botão Replicar */}
                 {onReplicate && hoursMatch && totalWorkedHours > 0 && (
                     <button
                         type="button"
                         onClick={() => setIsReplicateModalOpen(true)}
-                        className="flex-1 px-4 py-3 bg-cyan-700 text-white rounded-md font-semibold transition-colors hover:bg-cyan-600 flex items-center justify-center gap-2"
+                        className="flex-1 px-4 py-3 bg-cyan-700 text-white rounded-md font-semibold hover:bg-cyan-600 flex items-center justify-center gap-2"
                     >
-                        <FastForward size={18} />
-                        Replicar
+                        <FastForward size={18} /> Replicar
                     </button>
                 )}
-                
                 <button 
                   type="button"
                   onClick={handleSaveClick} 
-                  disabled={!hoursMatch}
-                  className="flex-1 px-4 py-3 bg-orange-600 text-white rounded-md font-semibold transition-colors disabled:bg-gray-400 dark:disabled:bg-gray-600 disabled:cursor-not-allowed hover:bg-orange-500"
+                  disabled={!hoursMatch || isSaving}
+                  className="flex-1 px-4 py-3 bg-orange-600 text-white rounded-md font-semibold transition-colors disabled:bg-gray-400 dark:disabled:bg-gray-600 flex items-center justify-center"
                 >
-                  Salvar Dia {totalWorkedHours === 0 && totalAllocatedHours === 0 ? '(Vazio)' : ''}
+                  {isSaving ? <Loader2 size={20} className="animate-spin mr-2"/> : null}
+                  {isSaving ? 'Salvando...' : 'Salvar Dia'}
                 </button>
             </div>
         </div>
-
       </div>
 
       <ClientProjectSelector 
         isOpen={isProjectSelectorOpen}
         onClose={() => setIsProjectSelectorOpen(false)}
-        projects={projects}
+        projects={projects.filter(p => p.status === 'active')}
         onSelectProject={handleAddProject}
         allocatedProjectIds={projectAllocations.map(p => p.projectId)}
       />
@@ -389,107 +329,51 @@ const DayEntryForm: React.FC<DayEntryFormProps> = ({ initialEntry, onSave, onRep
         onComplete={handleVoiceData}
       />
 
-      {/* Modal Distribuir Horas */}
       <Modal isOpen={isDistributeModalOpen} onClose={() => setIsDistributeModalOpen(false)} title="Distribuir Horas Automaticamente">
           <div className="flex flex-col h-[60vh]">
               <div className="mb-4">
-                  <p className="text-sm text-gray-600 dark:text-gray-300 mb-2">
-                      Selecione os projetos. O total de <strong>{decimalHoursToHHMM(totalWorkedHours)}</strong> será dividido igualmente entre eles.
-                  </p>
-                  <input 
-                    type="text" 
-                    placeholder="Filtrar projetos..." 
-                    value={distSearchTerm}
-                    onChange={(e) => setDistSearchTerm(e.target.value)}
-                    className="w-full p-2 border rounded-md bg-gray-50 dark:bg-gray-700 dark:border-gray-600"
-                  />
+                  <p className="text-sm text-gray-600 dark:text-gray-300 mb-2">Selecione os projetos ativos para dividir {decimalHoursToHHMM(totalWorkedHours)}.</p>
+                  <input type="text" placeholder="Filtrar projetos..." value={distSearchTerm} onChange={(e) => setDistSearchTerm(e.target.value)} className="w-full p-2 border rounded-md dark:bg-gray-700 dark:border-gray-600"/>
               </div>
-              <div className="flex-1 overflow-y-auto border rounded-md p-2 bg-gray-50 dark:bg-gray-900">
+              <div className="flex-1 overflow-y-auto border rounded-md p-2 dark:bg-gray-900">
                   {filteredDistProjects.map(p => {
                       const isSelected = selectedProjectsForDist.includes(p.id);
                       const display = getProjectDisplay(p);
                       return (
-                          <div 
-                            key={p.id} 
-                            onClick={() => toggleProjectSelection(p.id)}
-                            className={`flex items-start p-3 cursor-pointer rounded-md mb-2 transition-colors border ${isSelected ? 'bg-cyan-50 dark:bg-cyan-900/30 border-cyan-200' : 'bg-white dark:bg-gray-800 border-gray-200 dark:border-gray-700 hover:bg-gray-50 dark:hover:bg-gray-700'}`}
-                          >
-                             <div className="mt-1">
-                                 {isSelected ? <CheckSquare className="text-cyan-600 mr-3" size={20}/> : <Square className="text-gray-400 mr-3" size={20}/>}
-                             </div>
+                          <div key={p.id} onClick={() => toggleProjectSelection(p.id)} className={`flex items-start p-3 cursor-pointer rounded-md mb-2 transition-colors border ${isSelected ? 'bg-cyan-50 dark:bg-cyan-900/30 border-cyan-200' : 'bg-white dark:bg-gray-800 border-gray-200 dark:border-gray-700'}`}>
+                             <div className="mt-1">{isSelected ? <CheckSquare className="text-cyan-600 mr-3" size={20}/> : <Square className="text-gray-400 mr-3" size={20}/>}</div>
                              <div className="min-w-0 flex-1">
-                                 <p className="font-bold text-lg text-gray-900 dark:text-white leading-tight">
-                                    {display.title}
-                                 </p>
-                                 <p className="text-sm text-gray-500 dark:text-gray-400 mt-1">
-                                     {display.subtitle}
-                                 </p>
+                                 <p className="font-bold text-lg leading-tight">{display.title}</p>
+                                 <p className="text-sm text-gray-500 mt-1">{display.subtitle}</p>
                              </div>
                           </div>
                       );
                   })}
               </div>
               <div className="mt-4 pt-2 border-t flex justify-end gap-3">
-                  <button onClick={() => setIsDistributeModalOpen(false)} className="px-4 py-2 text-gray-600 hover:text-gray-800">Cancelar</button>
-                  <button 
-                    onClick={applyDistribution} 
-                    disabled={selectedProjectsForDist.length === 0}
-                    className="px-4 py-2 bg-cyan-600 text-white rounded-md hover:bg-cyan-500 disabled:opacity-50"
-                  >
-                      Distribuir ({selectedProjectsForDist.length})
-                  </button>
+                  <button onClick={() => setIsDistributeModalOpen(false)} className="px-4 py-2">Cancelar</button>
+                  <button onClick={applyDistribution} disabled={selectedProjectsForDist.length === 0} className="px-4 py-2 bg-cyan-600 text-white rounded-md disabled:opacity-50">Distribuir ({selectedProjectsForDist.length})</button>
               </div>
           </div>
       </Modal>
 
-      {/* Modal Replicar - NOVO CALENDÁRIO */}
       <Modal isOpen={isReplicateModalOpen} onClose={() => setIsReplicateModalOpen(false)} title="Selecione os dias para replicar">
           <div className="p-4 flex flex-col h-[70vh]">
               <div className="flex justify-between items-center mb-4">
-                  <button onClick={() => setReplicationMonth(subMonths(replicationMonth, 1))} className="p-2 rounded hover:bg-gray-200 dark:hover:bg-gray-600">&lt;</button>
+                  <button onClick={() => setReplicationMonth(subMonths(replicationMonth, 1))} className="p-2">&lt;</button>
                   <span className="font-bold capitalize text-lg">{format(replicationMonth, 'MMMM yyyy', { locale: ptBR })}</span>
-                  <button onClick={() => setReplicationMonth(addMonths(replicationMonth, 1))} className="p-2 rounded hover:bg-gray-200 dark:hover:bg-gray-600">&gt;</button>
+                  <button onClick={() => setReplicationMonth(addMonths(replicationMonth, 1))} className="p-2">&gt;</button>
               </div>
-              
-              <div className="grid grid-cols-7 gap-1 text-center text-xs font-bold mb-2">
-                 {['D', 'S', 'T', 'Q', 'Q', 'S', 'S'].map((d, i) => <div key={i}>{d}</div>)}
-              </div>
-              
               <div className="grid grid-cols-7 gap-1 flex-1 overflow-y-auto">
-                 {getReplicationCalendarDays().map(day => {
+                 {eachDayOfInterval({ start: startOfWeek(startOfMonth(replicationMonth)), end: endOfWeek(endOfMonth(replicationMonth)) }).map(day => {
                      const isSelected = selectedReplicationDates.some(d => isSameDay(d, day));
-                     const isCurrentMonth = isSameMonth(day, replicationMonth);
-                     
                      return (
-                         <button 
-                            key={day.toString()}
-                            onClick={() => toggleReplicationDate(day)}
-                            className={`
-                                p-2 rounded-md aspect-square flex items-center justify-center text-sm font-medium transition-colors
-                                ${!isCurrentMonth ? 'opacity-30' : ''}
-                                ${isSelected ? 'bg-cyan-600 text-white' : 'hover:bg-gray-100 dark:hover:bg-gray-700 bg-gray-50 dark:bg-gray-800'}
-                            `}
-                         >
-                             {format(day, 'd')}
-                         </button>
+                         <button key={day.toString()} onClick={() => toggleReplicationDate(day)} className={`p-2 rounded-md aspect-square flex items-center justify-center text-sm font-medium ${isSelected ? 'bg-cyan-600 text-white' : 'bg-gray-50 dark:bg-gray-800'}`}>{format(day, 'd')}</button>
                      );
                  })}
               </div>
-
-              <div className="mt-4 pt-4 border-t border-gray-200 dark:border-gray-700">
-                  <p className="text-sm text-center mb-3 text-gray-600 dark:text-gray-400">
-                      {selectedReplicationDates.length} dias selecionados
-                  </p>
-                  <div className="flex justify-end gap-3">
-                       <button onClick={() => setIsReplicateModalOpen(false)} className="px-4 py-2 text-gray-600 hover:text-gray-800 dark:text-gray-400 dark:hover:text-white">Cancelar</button>
-                       <button 
-                        onClick={handleConfirmReplicate} 
-                        disabled={selectedReplicationDates.length === 0}
-                        className="px-4 py-2 bg-cyan-700 text-white rounded-md hover:bg-cyan-600 disabled:opacity-50"
-                       >
-                           Confirmar Replicação
-                       </button>
-                  </div>
+              <div className="mt-4 pt-4 border-t">
+                  <button onClick={handleConfirmReplicate} disabled={selectedReplicationDates.length === 0} className="w-full px-4 py-2 bg-cyan-700 text-white rounded-md disabled:opacity-50">Confirmar Replicação ({selectedReplicationDates.length})</button>
               </div>
           </div>
       </Modal>

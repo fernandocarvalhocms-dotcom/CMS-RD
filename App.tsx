@@ -47,7 +47,6 @@ const generateUUID = () => {
     });
 };
 
-// Fix: Added missing isValidUUID helper function to validate stored UUID strings
 const isValidUUID = (uuid: string) => {
     const regex = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
     return typeof uuid === 'string' && regex.test(uuid);
@@ -60,6 +59,7 @@ const MainApp: React.FC<{ user: User; onLogout: () => void }> = ({ user, onLogou
   const [email, setEmail] = useState<string>('');
   const [theme, setTheme] = useState<Theme>('light');
   const [isLoadingData, setIsLoadingData] = useState(true);
+  const [isSaving, setIsSaving] = useState(false);
 
   const [isProjectFormOpen, setIsProjectFormOpen] = useState(false);
   const [projectToEdit, setProjectToEdit] = useState<Project | null>(null);
@@ -130,17 +130,13 @@ const MainApp: React.FC<{ user: User; onLogout: () => void }> = ({ user, onLogou
 
   const handleSaveProject = async (projectData: Project) => {
     try {
-        // Se for um novo projeto, garantimos um UUID v4
         const projectToSave = {
             ...projectData,
             id: projectData.id.includes('-') ? projectData.id : generateUUID()
         };
-        
         await saveProject(user.id, projectToSave);
         setIsProjectFormOpen(false);
         setProjectToEdit(null);
-        
-        // Recarrega do banco para garantir consistência
         const updatedProjects = await fetchProjects(user.id);
         setProjects(updatedProjects);
     } catch (e: any) {
@@ -152,7 +148,7 @@ const MainApp: React.FC<{ user: User; onLogout: () => void }> = ({ user, onLogou
     try {
         await deleteProject(projectId);
         await clearAllocationsForProject(user.id, projectId, allocations);
-        await loadCloudData(); // Recarrega tudo
+        await loadCloudData();
     } catch (e) {
         alert("Erro ao excluir projeto.");
     }
@@ -239,35 +235,41 @@ const MainApp: React.FC<{ user: User; onLogout: () => void }> = ({ user, onLogou
 
   const handleSaveDailyEntry = async (entry: DailyEntry) => {
     if (!dateKey) return;
+    setIsSaving(true);
     try {
         await saveAllocation(user.id, dateKey, entry);
         setAllocations(prev => ({ ...prev, [dateKey]: entry }));
         setSelectedDay(null);
     } catch (e: any) {
-        alert(e.message);
+        alert(e.message || "Erro ao salvar horas no Supabase.");
+    } finally {
+        setIsSaving(false);
     }
   };
 
   const handleReplicateDailyEntry = async (entry: DailyEntry, targetDates: Date[]) => {
       if (!selectedDay || targetDates.length === 0) return;
+      setIsSaving(true);
       try {
           const savePromises = targetDates.map(date => {
               const key = format(date, 'yyyy-MM-dd');
               return saveAllocation(user.id, key, entry);
           });
           await Promise.all(savePromises);
-          
           const updatedAllocations = await fetchAllocations(user.id);
           setAllocations(updatedAllocations);
           alert("Replicado com sucesso!");
           setSelectedDay(null);
       } catch (e) {
           alert("Erro ao replicar dados.");
+      } finally {
+          setIsSaving(false);
       }
   };
 
   const handleDeleteDailyEntry = async () => {
     if (!dateKey) return;
+    setIsSaving(true);
     try {
         await deleteAllocation(user.id, dateKey);
         setAllocations(prev => {
@@ -278,6 +280,8 @@ const MainApp: React.FC<{ user: User; onLogout: () => void }> = ({ user, onLogou
         setSelectedDay(null);
     } catch (e) {
         alert("Erro ao excluir.");
+    } finally {
+        setIsSaving(false);
     }
   };
   
@@ -351,6 +355,8 @@ const MainApp: React.FC<{ user: User; onLogout: () => void }> = ({ user, onLogou
               onImport={handleImportProjects}
               onDelete={handleDeleteProject}
               onDeleteAll={handleDeleteAllProjects}
+              userId={user.id}
+              refreshProjects={() => loadCloudData()}
             />
              <button 
                 onClick={() => { setProjectToEdit(null); setIsProjectFormOpen(true); }}
@@ -420,6 +426,7 @@ const MainApp: React.FC<{ user: User; onLogout: () => void }> = ({ user, onLogou
                 onDelete={handleDeleteDailyEntry}
                 projects={projects}
                 previousEntry={previousEntry}
+                isSaving={isSaving}
               />
             </div>
           );
@@ -540,7 +547,6 @@ const App: React.FC = () => {
     const restoreSession = async () => {
         setLoadingSession(true);
         const savedId = localStorage.getItem(SESSION_KEY);
-        // Fix: Use the added isValidUUID helper to validate the restored session ID
         if (savedId && isValidUUID(savedId)) {
             try {
                 const user = await fetchUserById(savedId);
