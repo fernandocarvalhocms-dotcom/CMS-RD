@@ -36,7 +36,7 @@ type Theme = 'light' | 'dark';
 
 const SESSION_KEY = 'cms_user_id';
 
-// Helper para gerar UUID
+// Helper robusto para gerar UUID v4
 const generateUUID = () => {
     if (typeof crypto !== 'undefined' && crypto.randomUUID) {
         return crypto.randomUUID();
@@ -45,6 +45,12 @@ const generateUUID = () => {
         var r = Math.random() * 16 | 0, v = c == 'x' ? r : (r & 0x3 | 0x8);
         return v.toString(16);
     });
+};
+
+// Fix: Added missing isValidUUID helper function to validate stored UUID strings
+const isValidUUID = (uuid: string) => {
+    const regex = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
+    return typeof uuid === 'string' && regex.test(uuid);
 };
 
 const MainApp: React.FC<{ user: User; onLogout: () => void }> = ({ user, onLogout }) => {
@@ -65,28 +71,28 @@ const MainApp: React.FC<{ user: User; onLogout: () => void }> = ({ user, onLogou
   const [yesterdayDateString, setYesterdayDateString] = useState('');
 
   // Initial Data Load
-  useEffect(() => {
-    const loadData = async () => {
-        setIsLoadingData(true);
-        try {
-            // Carrega dados da nuvem
-            const [p, a, s] = await Promise.all([
-                fetchProjects(user.id),
-                fetchAllocations(user.id),
-                fetchSettings(user.id)
-            ]);
-            setProjects(p);
-            setAllocations(a);
-            setTheme(s.theme);
-            setEmail(s.email);
-        } catch (e) {
-            console.error("Failed to load user data from Supabase", e);
-        } finally {
-            setIsLoadingData(false);
-        }
-    };
-    loadData();
+  const loadCloudData = useCallback(async () => {
+      setIsLoadingData(true);
+      try {
+          const [p, a, s] = await Promise.all([
+              fetchProjects(user.id),
+              fetchAllocations(user.id),
+              fetchSettings(user.id)
+          ]);
+          setProjects(p);
+          setAllocations(a);
+          setTheme(s.theme);
+          setEmail(s.email);
+      } catch (e) {
+          console.error("Erro ao carregar dados da nuvem", e);
+      } finally {
+          setIsLoadingData(false);
+      }
   }, [user.id]);
+
+  useEffect(() => {
+    loadCloudData();
+  }, [loadCloudData]);
 
   useEffect(() => {
     const root = window.document.documentElement;
@@ -94,7 +100,6 @@ const MainApp: React.FC<{ user: User; onLogout: () => void }> = ({ user, onLogou
     root.classList.add(theme);
   }, [theme]);
 
-  // Save Settings when they change
   const handleThemeChange = (newTheme: Theme) => {
       setTheme(newTheme);
       saveSettings(user.id, { theme: newTheme });
@@ -108,10 +113,8 @@ const MainApp: React.FC<{ user: User; onLogout: () => void }> = ({ user, onLogou
       saveSettings(user.id, { email });
   }
 
-  // Daily reminder check
   useEffect(() => {
-    if (isLoadingData) return; // Wait for data
-
+    if (isLoadingData) return;
     const yesterday = subDays(new Date(), 1);
     const yesterdayKey = format(yesterday, 'yyyy-MM-dd');
     const todayKey = format(new Date(), 'yyyy-MM-dd');
@@ -125,67 +128,61 @@ const MainApp: React.FC<{ user: User; onLogout: () => void }> = ({ user, onLogou
     }
   }, [allocations, isLoadingData]);
 
-  const handleSaveProject = async (project: Project) => {
-    // Update local state optimistic
-    if (projectToEdit) {
-      setProjects(prev => prev.map(p => p.id === project.id ? project : p));
-    } else {
-      setProjects(prev => [...prev, project]);
+  const handleSaveProject = async (projectData: Project) => {
+    try {
+        // Se for um novo projeto, garantimos um UUID v4
+        const projectToSave = {
+            ...projectData,
+            id: projectData.id.includes('-') ? projectData.id : generateUUID()
+        };
+        
+        await saveProject(user.id, projectToSave);
+        setIsProjectFormOpen(false);
+        setProjectToEdit(null);
+        
+        // Recarrega do banco para garantir consistência
+        const updatedProjects = await fetchProjects(user.id);
+        setProjects(updatedProjects);
+    } catch (e: any) {
+        alert(e.message || "Erro ao salvar projeto.");
     }
-    
-    // Save to Supabase
-    await saveProject(user.id, project);
-
-    setIsProjectFormOpen(false);
-    setProjectToEdit(null);
   };
 
   const handleDeleteProject = async (projectId: string) => {
-    setProjects(prevProjects => prevProjects.filter(p => p.id !== projectId));
-    
-    setAllocations(prevAllocations => {
-        const newAllocations: AllAllocations = {};
-        Object.keys(prevAllocations).forEach(date => {
-            const entry = prevAllocations[date];
-            const newProjectAllocations = entry.projectAllocations.filter(pa => pa.projectId !== projectId);
-            newAllocations[date] = { ...entry, projectAllocations: newProjectAllocations };
-        });
-        return newAllocations;
-    });
-
-    await deleteProject(projectId);
-    // Também limpa alocações salvas
-    await clearAllocationsForProject(user.id, projectId, allocations);
+    try {
+        await deleteProject(projectId);
+        await clearAllocationsForProject(user.id, projectId, allocations);
+        await loadCloudData(); // Recarrega tudo
+    } catch (e) {
+        alert("Erro ao excluir projeto.");
+    }
   };
 
   const handleDeleteAllProjects = async () => {
-    setProjects([]);
-    setAllocations({}); 
-    await deleteAllProjects(user.id);
+    try {
+        await deleteAllProjects(user.id);
+        setProjects([]);
+        setAllocations({}); 
+    } catch (e) {
+        alert("Erro ao limpar projetos.");
+    }
   };
   
   const handleToggleProjectStatus = async (projectId: string) => {
     const project = projects.find(p => p.id === projectId);
     if (!project) return;
-    
     const updatedProject = { ...project, status: (project.status === 'active' ? 'inactive' : 'active') as 'active'|'inactive' };
-    
-    setProjects(prev => prev.map(p => p.id === projectId ? updatedProject : p));
-    await saveProject(user.id, updatedProject);
+    try {
+        await saveProject(user.id, updatedProject);
+        setProjects(prev => prev.map(p => p.id === projectId ? updatedProject : p));
+    } catch (e) {
+        alert("Erro ao alterar status.");
+    }
   };
   
   const handleEditProject = (project: Project) => {
     setProjectToEdit(project);
     setIsProjectFormOpen(true);
-  };
-
-  const generateStableId = (name: string, client: string) => {
-    try {
-        const str = `${name.trim().toLowerCase()}-${client.trim().toLowerCase()}`;
-        return btoa(unescape(encodeURIComponent(str))).replace(/[^a-zA-Z0-9]/g, '').substring(0, 32);
-    } catch (e) {
-        return `proj-${Date.now()}-${Math.random()}`;
-    }
   };
 
   const handleImportProjects = async (file: File) => {
@@ -200,39 +197,32 @@ const MainApp: React.FC<{ user: User; onLogout: () => void }> = ({ user, onLogou
         const rows = utils.sheet_to_json<any[]>(worksheet, { header: 1 });
 
         if (rows.length < 2) {
-            alert("O arquivo está vazio ou não contém dados de projeto.");
+            alert("O arquivo está vazio.");
             return;
         }
 
         const importedProjects: Project[] = rows
           .slice(1)
           .filter(row => row && row.length >= 4 && row[0] && row[1] && row[2] && row[3])
-          .map((row) => {
-            const client = String(row[2]).trim(); 
-            const name = String(row[3]).trim(); 
-            
-            return {
-                id: generateStableId(name, client),
+          .map((row) => ({
+                id: generateUUID(),
                 code: String(row[0]).trim(),
                 accountingId: String(row[1]).trim(),
-                name: name,
-                client: client,
+                name: String(row[3]).trim(),
+                client: String(row[2]).trim(),
                 status: 'active',
-            };
-          });
+          }));
 
         if (importedProjects.length > 0) {
-           setProjects(importedProjects);
            for (const p of importedProjects) {
                await saveProject(user.id, p);
            }
-           alert(`Lista de projetos ATUALIZADA com sucesso!\n\nForam carregados ${importedProjects.length} projetos.`);
-        } else {
-          alert("Nenhum projeto válido encontrado. Verifique as colunas: Centro de custo, ID contabil, Projeto, cliente.");
+           const updated = await fetchProjects(user.id);
+           setProjects(updated);
+           alert(`${importedProjects.length} projetos importados.`);
         }
       } catch (error) {
-        console.error("Erro ao importar arquivo:", error);
-        alert("Ocorreu um erro ao ler o arquivo.");
+        alert("Erro na importação.");
       }
     };
     reader.readAsArrayBuffer(file);
@@ -249,46 +239,46 @@ const MainApp: React.FC<{ user: User; onLogout: () => void }> = ({ user, onLogou
 
   const handleSaveDailyEntry = async (entry: DailyEntry) => {
     if (!dateKey) return;
-    
-    // Atualiza estado local (UI instantânea)
-    setAllocations(prev => ({ ...prev, [dateKey]: entry }));
-    
-    // Salva no Banco de Dados
-    await saveAllocation(user.id, dateKey, entry);
-    
-    setSelectedDay(null);
+    try {
+        await saveAllocation(user.id, dateKey, entry);
+        setAllocations(prev => ({ ...prev, [dateKey]: entry }));
+        setSelectedDay(null);
+    } catch (e: any) {
+        alert(e.message);
+    }
   };
 
   const handleReplicateDailyEntry = async (entry: DailyEntry, targetDates: Date[]) => {
       if (!selectedDay || targetDates.length === 0) return;
-      
-      const newAllocationsLocal = { ...allocations };
-      const savePromises = [];
-
-      targetDates.forEach(date => {
-          const key = format(date, 'yyyy-MM-dd');
-          newAllocationsLocal[key] = entry;
-          savePromises.push(saveAllocation(user.id, key, entry));
-      });
-      
-      setAllocations(newAllocationsLocal);
-      await Promise.all(savePromises);
-      
-      alert(`Apontamento replicado com sucesso para ${targetDates.length} dias!`);
-      setSelectedDay(null);
+      try {
+          const savePromises = targetDates.map(date => {
+              const key = format(date, 'yyyy-MM-dd');
+              return saveAllocation(user.id, key, entry);
+          });
+          await Promise.all(savePromises);
+          
+          const updatedAllocations = await fetchAllocations(user.id);
+          setAllocations(updatedAllocations);
+          alert("Replicado com sucesso!");
+          setSelectedDay(null);
+      } catch (e) {
+          alert("Erro ao replicar dados.");
+      }
   };
 
   const handleDeleteDailyEntry = async () => {
     if (!dateKey) return;
-    
-    setAllocations(prev => {
-        const newAllocations = { ...prev };
-        if (newAllocations[dateKey]) delete newAllocations[dateKey];
-        return newAllocations;
-    });
-    
-    await deleteAllocation(user.id, dateKey);
-    setSelectedDay(null);
+    try {
+        await deleteAllocation(user.id, dateKey);
+        setAllocations(prev => {
+            const newAllocations = { ...prev };
+            delete newAllocations[dateKey];
+            return newAllocations;
+        });
+        setSelectedDay(null);
+    } catch (e) {
+        alert("Erro ao excluir.");
+    }
   };
   
   const projectsById = useMemo(() => {
@@ -307,9 +297,7 @@ const MainApp: React.FC<{ user: User; onLogout: () => void }> = ({ user, onLogou
         try {
           const startTime = parse(shift.start, 'HH:mm', new Date());
           const endTime = parse(shift.end, 'HH:mm', new Date());
-          if (endTime > startTime) {
-            totalMinutes += differenceInMinutes(endTime, startTime);
-          }
+          if (endTime > startTime) totalMinutes += differenceInMinutes(endTime, startTime);
         } catch (e) {}
       }
     });
@@ -346,7 +334,7 @@ const MainApp: React.FC<{ user: User; onLogout: () => void }> = ({ user, onLogou
         return (
             <div className="flex flex-col items-center justify-center h-[60vh]">
                 <Loader2 className="animate-spin text-orange-500 mb-4" size={48} />
-                <p className="text-gray-500">Sincronizando com a nuvem...</p>
+                <p className="text-gray-500">Sincronizando com o Supabase...</p>
             </div>
         );
     }
@@ -399,14 +387,13 @@ const MainApp: React.FC<{ user: User; onLogout: () => void }> = ({ user, onLogou
                   placeholder="seuemail@exemplo.com"
                   className="mt-1 block w-full bg-gray-200 dark:bg-gray-600 border-gray-300 dark:border-gray-500 rounded-md shadow-sm focus:ring-orange-500 focus:border-orange-500 p-2"
                 />
-                <p className="mt-2 text-xs text-gray-500 dark:text-gray-400">Este email será usado como referência nos arquivos exportados.</p>
             </div>
              <div className="bg-gray-100 dark:bg-gray-700 p-4 rounded-lg flex items-center">
                 <Cloud className="text-orange-500 mr-3" size={24} />
                 <div>
                     <h2 className="text-lg font-semibold mb-1">Sincronização em Nuvem</h2>
                     <p className="text-sm text-gray-600 dark:text-gray-400">
-                        Seus dados são salvos automaticamente no banco de dados Supabase e estão acessíveis em qualquer dispositivo.
+                        Seus dados são salvos exclusivamente no Supabase para segurança total.
                     </p>
                 </div>
             </div>
@@ -415,7 +402,6 @@ const MainApp: React.FC<{ user: User; onLogout: () => void }> = ({ user, onLogou
       case 'timesheet':
       default:
         if (selectedDay) {
-          // DAY VIEW (Timesheet Form)
           return (
             <div>
               <div className="sticky top-16 bg-white dark:bg-gray-800 z-10 p-4 shadow-md flex items-center justify-between border-b border-gray-200 dark:border-gray-700">
@@ -438,7 +424,6 @@ const MainApp: React.FC<{ user: User; onLogout: () => void }> = ({ user, onLogou
             </div>
           );
         } else {
-          // CALENDAR VIEW
           const start = startOfWeek(startOfMonth(calendarDate), { weekStartsOn: 0 });
           const end = endOfWeek(endOfMonth(calendarDate), { weekStartsOn: 0 });
           const days = eachDayOfInterval({ start, end });
@@ -454,11 +439,10 @@ const MainApp: React.FC<{ user: User; onLogout: () => void }> = ({ user, onLogou
                 </div>
                 {Object.keys(monthlyStats.hoursByClient).length > 0 && (
                     <div className="border-t border-gray-200 dark:border-gray-600 pt-3 mt-2">
-                        <p className="text-xs font-medium text-gray-500 dark:text-gray-400 text-center mb-2 uppercase tracking-wide">Horas por Cliente</p>
                         <div className="flex flex-wrap gap-2 justify-center">
                             {Object.entries(monthlyStats.hoursByClient).sort(([,a],[,b]) => b - a).map(([client, hours]) => (
                                 <div key={client} className="flex items-center bg-white dark:bg-gray-800 border border-gray-200 dark:border-gray-600 rounded-md px-2 py-1 shadow-sm">
-                                    <span className="text-xs text-gray-700 dark:text-gray-300 truncate max-w-[120px] mr-1" title={client}>{client}</span>
+                                    <span className="text-xs text-gray-700 dark:text-gray-300 truncate max-w-[120px] mr-1">{client}</span>
                                     <span className="text-xs font-bold text-orange-600 dark:text-orange-400 font-mono">{decimalHoursToHHMM(hours)}</span>
                                 </div>
                             ))}
@@ -497,11 +481,7 @@ const MainApp: React.FC<{ user: User; onLogout: () => void }> = ({ user, onLogou
                       `;
 
                       return (
-                          <button
-                              key={day.toString()}
-                              onClick={() => setSelectedDay(day)}
-                              className={dayClasses}
-                          >
+                          <button key={day.toString()} onClick={() => setSelectedDay(day)} className={dayClasses}>
                               <span className="text-sm font-semibold mb-1">{format(day, 'd')}</span>
                               {dailyHours > 0 && (
                                   <span className={`text-[10px] font-bold w-full text-center ${isCurrentDay ? 'text-white' : 'text-gray-600 dark:text-gray-300'}`}>
@@ -523,23 +503,18 @@ const MainApp: React.FC<{ user: User; onLogout: () => void }> = ({ user, onLogou
       <Header userName={user.name} />
       {renderContent()}
       <BottomNav activeView={activeView} setActiveView={setActiveView} />
-      
       <Modal isOpen={isProjectFormOpen} onClose={() => setIsProjectFormOpen(false)} title={projectToEdit ? 'Editar Projeto' : 'Novo Projeto'}>
         <ProjectForm onSave={handleSaveProject} onCancel={() => setIsProjectFormOpen(false)} projectToEdit={projectToEdit} />
       </Modal>
-
        <Modal isOpen={showReminder} onClose={() => setShowReminder(false)} title="Lembrete de Apontamento">
          <div className="text-center">
             <AlertTriangle className="mx-auto h-12 w-12 text-yellow-400" />
             <h3 className="mt-2 text-lg font-medium">Você não preencheu suas horas!</h3>
-            <div className="mt-2 text-sm text-gray-500 dark:text-gray-300">
-              <p>Parece que você esqueceu de registrar suas atividades de ontem, {yesterdayDateString}.</p>
-              <p className="mt-2">Por favor, preencha para manter seus relatórios atualizados.</p>
-            </div>
+            <p className="mt-2 text-sm text-gray-500 dark:text-gray-300">Ontem, {yesterdayDateString}, ficou sem registro.</p>
             <div className="mt-4">
               <button
                 type="button"
-                className="inline-flex justify-center rounded-md border border-transparent bg-orange-600 px-4 py-2 text-sm font-medium text-white hover:bg-orange-700 focus:outline-none focus:ring-2 focus:ring-orange-500 focus:border-orange-500 focus-visible:ring-offset-2"
+                className="inline-flex justify-center rounded-md border border-transparent bg-orange-600 px-4 py-2 text-sm font-medium text-white hover:bg-orange-700"
                 onClick={() => {
                     const yesterday = subDays(new Date(), 1);
                     setCalendarDate(yesterday);
@@ -553,7 +528,6 @@ const MainApp: React.FC<{ user: User; onLogout: () => void }> = ({ user, onLogou
             </div>
          </div>
       </Modal>
-
     </div>
   );
 };
@@ -562,21 +536,17 @@ const App: React.FC = () => {
   const [currentUser, setCurrentUser] = useState<User | null>(null);
   const [loadingSession, setLoadingSession] = useState(true);
   
-  // Tenta restaurar sessão ao iniciar (Agora Local)
   useEffect(() => {
     const restoreSession = async () => {
         setLoadingSession(true);
         const savedId = localStorage.getItem(SESSION_KEY);
-        if (savedId) {
+        // Fix: Use the added isValidUUID helper to validate the restored session ID
+        if (savedId && isValidUUID(savedId)) {
             try {
                 const user = await fetchUserById(savedId);
-                if (user) {
-                    setCurrentUser(user);
-                } else {
-                    localStorage.removeItem(SESSION_KEY);
-                }
+                if (user) setCurrentUser(user);
+                else localStorage.removeItem(SESSION_KEY);
             } catch (e) {
-                console.error("Erro ao restaurar sessão:", e);
                 localStorage.removeItem(SESSION_KEY);
             }
         }
@@ -586,26 +556,16 @@ const App: React.FC = () => {
   }, []);
 
   const handleLogin = async (email: string, password: string) => {
-      try {
-          const user = await loginUser(email, password);
-          setCurrentUser(user);
-          localStorage.setItem(SESSION_KEY, user.id);
-      } catch (error) {
-          throw error; 
-      }
+      const user = await loginUser(email, password);
+      setCurrentUser(user);
+      localStorage.setItem(SESSION_KEY, user.id);
   };
 
   const handleCreateUser = async (name: string, email: string, password: string) => {
-      try {
         const id = generateUUID();
         const created = await createUser({ id, name, email, password });
-        if (created) {
-          setCurrentUser(created);
-          localStorage.setItem(SESSION_KEY, created.id);
-        }
-      } catch (error) {
-        throw error;
-      }
+        setCurrentUser(created);
+        localStorage.setItem(SESSION_KEY, created.id);
   };
   
   const handleLogout = () => {
