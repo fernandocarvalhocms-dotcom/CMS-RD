@@ -2,17 +2,32 @@ import { supabase } from './supabase';
 import type { User, Project, AllAllocations, DailyEntry } from '../types';
 
 // ==========================================
-// CONSTANTES LOCAIS (Fallback & Cache)
+// CONSTANTES LOCAIS (Apenas para Cache de Leitura)
 // ==========================================
 const KEY_USERS = 'cms_users_db_v1';
 const getKeyProjects = (userId: string) => `cms_data_${userId}_projects`;
 const getKeyAllocations = (userId: string) => `cms_data_${userId}_allocations`;
 const getKeySettings = (userId: string) => `cms_data_${userId}_settings`;
 
-// Helper para logs seguros
+// Helper para validação de UUID v4
+const isValidUUID = (uuid: string) => {
+    const regex = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
+    return typeof uuid === 'string' && regex.test(uuid);
+};
+
+// Helper para logs seguros - Corrigido para evitar [object Object]
 const logError = (context: string, error: any) => {
-    const msg = error?.message || JSON.stringify(error);
-    console.warn(`[DataService] ${context}:`, msg);
+    let msg = 'Erro desconhecido';
+    if (typeof error === 'string') msg = error;
+    else if (error?.message) msg = error.message;
+    else {
+        try {
+            msg = JSON.stringify(error);
+        } catch (e) {
+            msg = String(error);
+        }
+    }
+    console.error(`[DataService] ${context}:`, msg);
 };
 
 // ==========================================
@@ -20,7 +35,6 @@ const logError = (context: string, error: any) => {
 // ==========================================
 
 export const fetchUserById = async (userId: string): Promise<User | null> => {
-  // 1. Tenta Supabase (Leitura Nuvem First)
   try {
     const { data, error } = await supabase
       .from('app_users')
@@ -31,98 +45,70 @@ export const fetchUserById = async (userId: string): Promise<User | null> => {
     if (error) throw error;
 
     if (data) {
-       return {
+       const user = {
             id: data.id,
             name: data.name,
             email: data.email,
             password: data.password_hash 
         };
+        return user;
     }
   } catch (err) {
-    logError('fetchUserById (Cloud)', err);
+    logError('fetchUserById', err);
   }
 
-  // 2. Fallback Local
-  try {
-      const usersJson = localStorage.getItem(KEY_USERS);
-      const users: User[] = usersJson ? JSON.parse(usersJson) : [];
-      const localUser = users.find(u => u.id === userId);
-      if (localUser) return localUser;
-  } catch (e) {
-      console.error("Erro leitura local user:", e);
-  }
-
-  return null;
+  // Fallback apenas para leitura
+  const usersJson = localStorage.getItem(KEY_USERS);
+  const users: User[] = usersJson ? JSON.parse(usersJson) : [];
+  return users.find(u => u.id === userId) || null;
 };
 
 export const loginUser = async (email: string, password: string): Promise<User> => {
-  // 1. Tenta Supabase (Leitura Nuvem First)
+  const cleanEmail = email.trim().toLowerCase();
   try {
+      console.log(`[DataService] Tentando login para: ${cleanEmail}`);
       const { data, error } = await supabase
         .from('app_users')
         .select('*')
-        .eq('email', email)
+        .eq('email', cleanEmail)
         .maybeSingle();
       
       if (error) throw error;
-
-      if (data) {
-        if (data.password_hash !== password) throw new Error('Senha incorreta.');
-        return { id: data.id, name: data.name, email: data.email, password: data.password_hash };
+      if (!data) {
+          console.warn(`[DataService] Usuário não encontrado no Supabase para o email: ${cleanEmail}`);
+          throw new Error('Usuário não encontrado.');
       }
+      
+      if (data.password_hash !== password) throw new Error('Senha incorreta.');
+
+      return { id: data.id, name: data.name, email: data.email, password: data.password_hash };
   } catch (err: any) {
-      if (err.message !== 'Senha incorreta.') {
-          logError('loginUser (Cloud)', err);
-      } else {
-          throw err;
-      }
+      logError('loginUser', err);
+      throw err;
   }
-
-  // 2. Fallback Local
-  const usersJson = localStorage.getItem(KEY_USERS);
-  const users: User[] = usersJson ? JSON.parse(usersJson) : [];
-  const user = users.find(u => u.email?.toLowerCase() === email.toLowerCase());
-
-  if (user && user.password === password) return user;
-  
-  throw new Error('Usuário não encontrado ou erro de conexão.');
 };
 
 export const createUser = async (user: User): Promise<User> => {
-  // 1. Salva Localmente PRIMEIRO (Escrita Local First)
-  try {
-      const usersJson = localStorage.getItem(KEY_USERS);
-      const users: User[] = usersJson ? JSON.parse(usersJson) : [];
-      
-      // Verifica duplicidade local
-      if (!users.some(u => u.email === user.email)) {
-          users.push(user);
-          localStorage.setItem(KEY_USERS, JSON.stringify(users));
-      }
-  } catch(e) {
-      console.error("Erro ao salvar usuário localmente:", e);
+  // ESCRETA FORÇADA NO SUPABASE
+  const { error } = await supabase
+    .from('app_users')
+    .insert([{
+        id: user.id,
+        name: user.name,
+        email: user.email.trim().toLowerCase(),
+        password_hash: user.password
+    }]);
+
+  if (error) {
+      logError('createUser', error);
+      throw error;
   }
 
-  // 2. Tenta Salvar no Supabase (Sync Background)
-  try {
-      // Verifica duplicidade nuvem antes de inserir
-      const { data: existing } = await supabase.from('app_users').select('id').eq('email', user.email).maybeSingle();
-      
-      if (!existing) {
-          const { error } = await supabase
-            .from('app_users')
-            .insert([{
-                id: user.id,
-                name: user.name,
-                email: user.email,
-                password_hash: user.password
-            }]);
-
-          if (error) throw error;
-      }
-  } catch (err: any) {
-      logError('createUser (Cloud)', err);
-  }
+  // Atualiza cache local para login futuro offline (opcional)
+  const usersJson = localStorage.getItem(KEY_USERS);
+  const users: User[] = usersJson ? JSON.parse(usersJson) : [];
+  users.push(user);
+  localStorage.setItem(KEY_USERS, JSON.stringify(users));
 
   return user;
 };
@@ -134,7 +120,6 @@ export const fetchUsers = async (): Promise<User[]> => { return []; };
 // ==========================================
 
 export const fetchProjects = async (userId: string): Promise<Project[]> => {
-  // 1. Tenta Nuvem (Leitura Nuvem First)
   try {
     const { data, error } = await supabase
       .from('projects')
@@ -144,99 +129,72 @@ export const fetchProjects = async (userId: string): Promise<Project[]> => {
     if (error) throw error;
 
     if (data) {
-        // Mapeamento correto das colunas do banco (id_contabil, cost_center) para o App
-        // Status: Banco não tem coluna status, assumimos 'active' por padrão.
         const projects: Project[] = data.map((p: any) => ({
             id: p.id,
             name: p.name,
-            code: p.cost_center || p.code || '', // Fallback para manter compatibilidade
+            code: p.cost_center || '', 
             client: p.client,
-            accountingId: p.id_contabil || p.accounting_id || '', // Fallback para id_contabil
-            status: 'active' // Supabase schema não tem status, forçamos active
+            accountingId: p.id_contabil || '', 
+            status: 'active'
         }));
-        // Atualiza Cache Local (Sync Down)
         localStorage.setItem(getKeyProjects(userId), JSON.stringify(projects));
         return projects;
     }
   } catch (err) {
-      logError('fetchProjects (Cloud)', err);
+      logError('fetchProjects', err);
   }
 
-  // 2. Fallback Local
   const json = localStorage.getItem(getKeyProjects(userId));
   return json ? JSON.parse(json) : [];
 };
 
 export const saveProject = async (userId: string, project: Project): Promise<boolean> => {
-  // 1. Salva Local PRIMEIRO (Escrita Local First)
-  try {
-      const projectsJson = localStorage.getItem(getKeyProjects(userId));
-      const projects: Project[] = projectsJson ? JSON.parse(projectsJson) : [];
-      
-      const index = projects.findIndex(p => p.id === project.id);
-      if (index >= 0) projects[index] = project;
-      else projects.push(project);
-      
-      localStorage.setItem(getKeyProjects(userId), JSON.stringify(projects));
-  } catch (e) { 
-      console.error("Erro crítico salvar projeto local:", e); 
+  if (!isValidUUID(userId)) {
+      throw new Error("ID de usuário inválido para sincronização.");
   }
 
-  // 2. Tenta Nuvem (Sync Background)
-  try {
-      // Mapeamento correto para as colunas do banco.
-      // IMPORTANTE: Removemos 'status' pois a coluna não existe no DB.
-      const payload = {
-        id: project.id,
-        user_id: userId,
-        name: project.name,
-        cost_center: project.code,        // Mapeado: App(code) -> DB(cost_center)
-        client: project.client,
-        id_contabil: project.accountingId // Mapeado: App(accountingId) -> DB(id_contabil)
-      };
-      
-      const { error } = await supabase.from('projects').upsert(payload);
-      if (error) throw error;
-  } catch (err: any) {
-      logError('saveProject (Cloud)', err);
-      // Não retorna false para não travar a UI, pois salvou local
+  const payload: any = {
+    user_id: userId,
+    name: project.name,
+    cost_center: project.code,        
+    client: project.client,
+    id_contabil: project.accountingId 
+  };
+
+  if (isValidUUID(project.id)) {
+      payload.id = project.id;
   }
+
+  console.log('[DataService] Sincronizando Projeto:', payload);
+
+  const { error } = await supabase.from('projects').upsert(payload);
+  
+  if (error) {
+      logError('saveProject', error);
+      throw error;
+  }
+
   return true;
 };
 
 export const deleteProject = async (projectId: string): Promise<boolean> => {
-    // 1. Local
-    try {
-        const userId = localStorage.getItem('cms_user_id'); 
-        if (userId) {
-            const projectsJson = localStorage.getItem(getKeyProjects(userId));
-            if (projectsJson) {
-                const projects: Project[] = JSON.parse(projectsJson);
-                const newProjects = projects.filter(p => p.id !== projectId);
-                localStorage.setItem(getKeyProjects(userId), JSON.stringify(newProjects));
-            }
-        }
-    } catch (e) {}
+    if (!isValidUUID(projectId)) return true;
 
-    // 2. Nuvem
-    try {
-        await supabase.from('projects').delete().eq('id', projectId);
-    } catch (e) {
-        logError('deleteProject (Cloud)', e);
+    const { error } = await supabase.from('projects').delete().eq('id', projectId);
+    if (error) {
+        logError('deleteProject', error);
+        throw error;
     }
-    
     return true;
 };
 
 export const deleteAllProjects = async (userId: string): Promise<boolean> => {
-    // 1. Local
-    localStorage.removeItem(getKeyProjects(userId));
-    
-    // 2. Nuvem
-    try {
-        await supabase.from('projects').delete().eq('user_id', userId);
-    } catch(e) {
-        logError('deleteAllProjects (Cloud)', e);
+    if (!isValidUUID(userId)) return true;
+
+    const { error } = await supabase.from('projects').delete().eq('user_id', userId);
+    if (error) {
+        logError('deleteAllProjects', error);
+        throw error;
     }
     return true;
 };
@@ -246,11 +204,11 @@ export const deleteAllProjects = async (userId: string): Promise<boolean> => {
 // ==========================================
 
 export const fetchAllocations = async (userId: string): Promise<AllAllocations> => {
-  // 1. Tenta Nuvem (Leitura Nuvem First)
   try {
+    // Corrigido: Colunas date -> day, data -> entry conforme erro de schema
     const { data, error } = await supabase
         .from('allocations')
-        .select('date, data')
+        .select('day, entry')
         .eq('user_id', userId);
 
     if (error) throw error;
@@ -258,74 +216,52 @@ export const fetchAllocations = async (userId: string): Promise<AllAllocations> 
     if (data) {
         const allocations: AllAllocations = {};
         data.forEach((row: any) => {
-            allocations[row.date] = row.data;
+            allocations[row.day] = row.entry;
         });
-        // Atualiza Cache Local (Sync Down)
         localStorage.setItem(getKeyAllocations(userId), JSON.stringify(allocations));
         return allocations;
     }
   } catch (err) {
-      logError('fetchAllocations (Cloud)', err);
+      logError('fetchAllocations', err);
   }
 
-  // 2. Fallback Local
   const json = localStorage.getItem(getKeyAllocations(userId));
   return json ? JSON.parse(json) : {};
 };
 
 export const saveAllocation = async (userId: string, date: string, entry: DailyEntry): Promise<boolean> => {
-  // 1. Salva Local PRIMEIRO (Escrita Local First)
-  try {
-      const json = localStorage.getItem(getKeyAllocations(userId));
-      const all: AllAllocations = json ? JSON.parse(json) : {};
-      
-      all[date] = entry;
-      localStorage.setItem(getKeyAllocations(userId), JSON.stringify(all));
-  } catch(e) { 
-      console.error("Erro crítico salvar alocação local:", e); 
-  }
+  if (!isValidUUID(userId)) return true;
 
-  // 2. Tenta Nuvem (Sync Background)
-  try {
-      const { error } = await supabase
-        .from('allocations')
-        .upsert({
-          user_id: userId,
-          date: date,
-          data: entry // Supabase converte JSON automaticamente
-        }, { onConflict: 'user_id, date' });
+  // Corrigido: Colunas date -> day, data -> entry conforme erro de schema
+  const { error } = await supabase
+    .from('allocations')
+    .upsert({
+      user_id: userId,
+      day: date,
+      entry: entry
+    }, { onConflict: 'user_id, day' });
 
-      if (error) throw error;
-  } catch (err: any) {
-      logError(`saveAllocation dia ${date} (Cloud)`, err);
+  if (error) {
+      logError('saveAllocation', error);
+      throw error;
   }
   
   return true;
 };
 
 export const deleteAllocation = async (userId: string, date: string): Promise<boolean> => {
-  // 1. Local
-  try {
-      const json = localStorage.getItem(getKeyAllocations(userId));
-      if (json) {
-          const all = JSON.parse(json);
-          delete all[date];
-          localStorage.setItem(getKeyAllocations(userId), JSON.stringify(all));
-      }
-  } catch(e) {}
+  if (!isValidUUID(userId)) return true;
 
-  // 2. Nuvem
-  try {
-    await supabase.from('allocations').delete().eq('user_id', userId).eq('date', date);
-  } catch(e) {
-      logError('deleteAllocation (Cloud)', e);
+  // Corrigido: date -> day
+  const { error } = await supabase.from('allocations').delete().eq('user_id', userId).eq('day', date);
+  if (error) {
+      logError('deleteAllocation', error);
+      throw error;
   }
-  
   return true;
 };
 
 export const clearAllocationsForProject = async (userId: string, projectId: string, currentAllocations: AllAllocations): Promise<void> => {
-    // 1. Local Update
     const newAllocations = { ...currentAllocations };
     let changed = false;
     for (const date in newAllocations) {
@@ -335,17 +271,13 @@ export const clearAllocationsForProject = async (userId: string, projectId: stri
             changed = true;
         }
     }
-    if (changed) {
-        localStorage.setItem(getKeyAllocations(userId), JSON.stringify(newAllocations));
-    }
 
-    // 2. Nuvem Update (Iterativo para garantir consistência)
     if (changed) {
         const updates = [];
         for (const [date, entry] of Object.entries(newAllocations)) {
             updates.push(saveAllocation(userId, date, entry));
         }
-        Promise.all(updates).catch(e => logError('clearAllocationsForProject (Cloud)', e));
+        await Promise.all(updates);
     }
 };
 
@@ -354,7 +286,6 @@ export const clearAllocationsForProject = async (userId: string, projectId: stri
 // ==========================================
 
 export const fetchSettings = async (userId: string): Promise<{ theme: 'light' | 'dark', email: string }> => {
-    // 1. Nuvem
     try {
         const { data, error } = await supabase.from('user_settings').select('*').eq('user_id', userId).maybeSingle();
         if (error) throw error;
@@ -365,38 +296,32 @@ export const fetchSettings = async (userId: string): Promise<{ theme: 'light' | 
             return settings;
         }
     } catch(e) {
-        logError('fetchSettings (Cloud)', e);
+        logError('fetchSettings', e);
     }
 
-    // 2. Local
     const json = localStorage.getItem(getKeySettings(userId));
     return json ? JSON.parse(json) : { theme: 'light', email: '' };
 };
 
 export const saveSettings = async (userId: string, settings: { theme?: 'light' | 'dark', email?: string }): Promise<boolean> => {
-    // 1. Local
-    try {
-        const json = localStorage.getItem(getKeySettings(userId));
-        const current = json ? JSON.parse(json) : { theme: 'light', email: '' };
-        const newSettings = { ...current, ...settings };
-        localStorage.setItem(getKeySettings(userId), JSON.stringify(newSettings));
-    } catch(e) {}
+    if (!isValidUUID(userId)) return true;
 
-    // 2. Nuvem
-    try {
-        const json = localStorage.getItem(getKeySettings(userId));
-        const current = json ? JSON.parse(json) : {}; 
-        const newSettings = { ...current, ...settings };
-        
-        const { error } = await supabase.from('user_settings').upsert({
-            user_id: userId,
-            theme: newSettings.theme,
-            email: newSettings.email
-        }, { onConflict: 'user_id' });
-        
-        if (error) throw error;
-    } catch (err: any) {
-        logError('saveSettings (Cloud)', err);
+    // Primeiro pegamos o estado atual para não sobrescrever o que não foi enviado
+    const json = localStorage.getItem(getKeySettings(userId));
+    const current = json ? JSON.parse(json) : { theme: 'light', email: '' };
+    const newSettings = { ...current, ...settings };
+
+    const { error } = await supabase.from('user_settings').upsert({
+        user_id: userId,
+        theme: newSettings.theme,
+        email: newSettings.email
+    }, { onConflict: 'user_id' });
+    
+    if (error) {
+        logError('saveSettings', error);
+        throw error;
     }
+
+    localStorage.setItem(getKeySettings(userId), JSON.stringify(newSettings));
     return true;
 };
