@@ -1,3 +1,4 @@
+
 import { supabase } from './supabase';
 import type { User, Project, AllAllocations, DailyEntry, TimeShift } from '../types';
 import { parse, differenceInMinutes } from 'date-fns';
@@ -15,22 +16,25 @@ const isValidUUID = (uuid: string) => {
     return typeof uuid === 'string' && regex.test(uuid);
 };
 
-// Helper para calcular total de horas de uma entry
-const calculateTotalHoursFromEntry = (entry: DailyEntry): number => {
-  let totalMinutes = 0;
-  const shifts = [entry.morning, entry.afternoon, entry.evening];
-  shifts.forEach((shift: TimeShift) => {
-    if (shift.start && shift.end) {
-      try {
-        const startTime = parse(shift.start, 'HH:mm', new Date());
-        const endTime = parse(shift.end, 'HH:mm', new Date());
-        if (endTime > startTime) {
-          totalMinutes += differenceInMinutes(endTime, startTime);
+// Helper para calcular totais de horas (para colunas de resumo no DB)
+const calculateTotals = (entry: DailyEntry) => {
+    let workedMinutes = 0;
+    const shifts = [entry.morning, entry.afternoon, entry.evening];
+    shifts.forEach((shift: TimeShift) => {
+        if (shift.start && shift.end) {
+            try {
+                const start = parse(shift.start, 'HH:mm', new Date());
+                const end = parse(shift.end, 'HH:mm', new Date());
+                if (end > start) workedMinutes += differenceInMinutes(end, start);
+            } catch (e) {}
         }
-      } catch (e) {}
-    }
-  });
-  return totalMinutes / 60;
+    });
+    
+    const allocatedHours = entry.projectAllocations.reduce((sum, pa) => sum + (Number(pa.hours) || 0), 0);
+    return {
+        hours_worked: workedMinutes / 60,
+        hours_allocated: allocatedHours
+    };
 };
 
 const logError = (context: string, error: any) => {
@@ -39,7 +43,7 @@ const logError = (context: string, error: any) => {
     else if (error?.message) msg = error.message;
     else {
         try {
-            msg = JSON.stringify(error, null, 2);
+            msg = JSON.stringify(error);
         } catch (e) {
             msg = String(error);
         }
@@ -64,10 +68,7 @@ export const fetchUserById = async (userId: string): Promise<User | null> => {
   } catch (err) {
     logError('fetchUserById', err);
   }
-  
-  const usersJson = localStorage.getItem(KEY_USERS);
-  const users: User[] = usersJson ? JSON.parse(usersJson) : [];
-  return users.find(u => u.id === userId) || null;
+  return null;
 };
 
 export const loginUser = async (email: string, password: string): Promise<User> => {
@@ -78,10 +79,7 @@ export const loginUser = async (email: string, password: string): Promise<User> 
     .eq('email', cleanEmail)
     .maybeSingle();
   
-  if (error) {
-      logError('loginUser', error);
-      throw new Error("Falha na conexão com o banco de dados.");
-  }
+  if (error) throw error;
   if (!data) throw new Error('Usuário não encontrado.');
   if (data.password_hash !== password) throw new Error('Senha incorreta.');
 
@@ -94,14 +92,11 @@ export const createUser = async (user: User): Promise<User> => {
     .insert([{
         id: user.id,
         name: user.name,
-        email: user.email?.trim().toLowerCase(),
+        email: user.email.trim().toLowerCase(),
         password_hash: user.password
     }]);
 
-  if (error) {
-      logError('createUser', error);
-      throw new Error("Não foi possível criar sua conta na nuvem.");
-  }
+  if (error) throw error;
   return user;
 };
 
@@ -117,6 +112,7 @@ export const fetchProjects = async (userId: string): Promise<Project[]> => {
       .eq('user_id', userId);
 
     if (error) throw error;
+
     if (data) {
         const projects: Project[] = data.map((p: any) => ({
             id: p.id,
@@ -153,12 +149,7 @@ export const saveProject = async (userId: string, project: Project): Promise<boo
   }
 
   const { error } = await supabase.from('projects').upsert(payload);
-  
-  if (error) {
-      logError('saveProject', error);
-      throw new Error("Erro ao salvar projeto no banco de dados.");
-  }
-  
+  if (error) throw error;
   return true;
 };
 
@@ -182,19 +173,20 @@ export const deleteAllProjects = async (userId: string): Promise<boolean> => {
 
 export const fetchAllocations = async (userId: string): Promise<AllAllocations> => {
   try {
+    // CORREÇÃO: Usando 'work_date' e 'data' conforme identificado no erro de schema
     const { data, error } = await supabase
         .from('allocations')
-        .select('work_date, entry') 
+        .select('work_date, data')
         .eq('user_id', userId);
 
     if (error) throw error;
-    
+
     if (data) {
         const allocations: AllAllocations = {};
         data.forEach((row: any) => {
-            const dateKey = row.work_date;
-            const dataVal = row.entry;
-            if (dateKey) allocations[dateKey] = dataVal;
+            if (row.work_date) {
+                allocations[row.work_date] = row.data;
+            }
         });
         localStorage.setItem(getKeyAllocations(userId), JSON.stringify(allocations));
         return allocations;
@@ -207,17 +199,17 @@ export const fetchAllocations = async (userId: string): Promise<AllAllocations> 
 };
 
 export const saveAllocation = async (userId: string, date: string, entry: DailyEntry): Promise<boolean> => {
-  if (!isValidUUID(userId)) throw new Error("Sessão expirada.");
+  if (!isValidUUID(userId)) return false;
 
-  const hoursWorked = calculateTotalHoursFromEntry(entry);
-  const hoursAllocated = entry.projectAllocations.reduce((sum, a) => sum + (Number(a.hours) || 0), 0);
+  const { hours_worked, hours_allocated } = calculateTotals(entry);
 
+  // CORREÇÃO: Mapeamento exato para colunas do Supabase
   const payload = {
     user_id: userId,
-    work_date: date,
-    entry: entry,
-    hours_worked: hoursWorked,
-    hours_allocated: hoursAllocated
+    work_date: date,    // Coluna correta: work_date
+    data: entry,        // Coluna correta: data (JSONB)
+    hours_worked,       // Coluna solicitada
+    hours_allocated     // Coluna solicitada
   };
 
   const { error } = await supabase
@@ -226,9 +218,8 @@ export const saveAllocation = async (userId: string, date: string, entry: DailyE
 
   if (error) {
       logError('saveAllocation', error);
-      throw new Error(`Erro ao salvar no Supabase: ${error.message}`);
+      throw error;
   }
-  
   return true;
 };
 
@@ -250,9 +241,7 @@ export const clearAllocationsForProject = async (userId: string, projectId: stri
         }
     }
     if (changed) {
-        const updates = Object.entries(newAllocations)
-            .filter(([date, entry]) => currentAllocations[date] !== entry)
-            .map(([date, entry]) => saveAllocation(userId, date, entry));
+        const updates = Object.entries(newAllocations).map(([date, entry]) => saveAllocation(userId, date, entry));
         await Promise.all(updates);
     }
 };
@@ -265,31 +254,19 @@ export const fetchSettings = async (userId: string): Promise<{ theme: 'light' | 
     try {
         const { data, error } = await supabase.from('user_settings').select('*').eq('user_id', userId).maybeSingle();
         if (error) throw error;
-        if (data) {
-            const settings = { theme: data.theme, email: data.email };
-            localStorage.setItem(getKeySettings(userId), JSON.stringify(settings));
-            return settings;
-        }
+        if (data) return { theme: data.theme, email: data.email };
     } catch(e) {
         logError('fetchSettings', e);
     }
-    const json = localStorage.getItem(getKeySettings(userId));
-    return json ? JSON.parse(json) : { theme: 'light', email: '' };
+    return { theme: 'light', email: '' };
 };
 
 export const saveSettings = async (userId: string, settings: { theme?: 'light' | 'dark', email?: string }): Promise<boolean> => {
     if (!isValidUUID(userId)) return false;
-    const json = localStorage.getItem(getKeySettings(userId));
-    const current = json ? JSON.parse(json) : { theme: 'light', email: '' };
-    const newSettings = { ...current, ...settings };
-
     const { error } = await supabase.from('user_settings').upsert({
         user_id: userId,
-        theme: newSettings.theme,
-        email: newSettings.email
+        ...settings
     }, { onConflict: 'user_id' });
-    
     if (error) throw error;
-    localStorage.setItem(getKeySettings(userId), JSON.stringify(newSettings));
     return true;
 };

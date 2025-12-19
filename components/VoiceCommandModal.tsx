@@ -70,8 +70,7 @@ const VoiceCommandModal: React.FC<VoiceCommandModalProps> = ({ isOpen, onClose, 
         
         setStatus('listening');
 
-        // Fix: Use correct initialization pattern for Gemini API
-        const ai = new GoogleGenAI({ apiKey: process.env.API_KEY });
+        const ai = new GoogleGenAI({ apiKey: process.env.API_KEY as string });
         
         audioContextRef.current = new (window.AudioContext || (window as any).webkitAudioContext)({ sampleRate: 16000 });
 
@@ -90,7 +89,6 @@ const VoiceCommandModal: React.FC<VoiceCommandModalProps> = ({ isOpen, onClose, 
               scriptProcessor.onaudioprocess = (audioProcessingEvent) => {
                   const inputData = audioProcessingEvent.inputBuffer.getChannelData(0);
                   const pcmBlob = createBlob(inputData);
-                  // Fix: Use the promise-then pattern to avoid race conditions with session connection
                   sessionPromiseRef.current?.then((session) => {
                       session.sendRealtimeInput({ media: pcmBlob });
                   });
@@ -142,13 +140,12 @@ const VoiceCommandModal: React.FC<VoiceCommandModalProps> = ({ isOpen, onClose, 
 
     setStatus('processing');
     try {
-      // Fix: Updated GoogleGenAI initialization and model to gemini-3-flash-preview for text tasks
-      const ai = new GoogleGenAI({ apiKey: process.env.API_KEY });
+      const ai = new GoogleGenAI({ apiKey: process.env.API_KEY as string });
 
       const availableProjects = projects.map(p => ({ name: p.name, code: p.code, client: p.client, id: p.id }));
 
       const response = await ai.models.generateContent({
-        model: 'gemini-3-flash-preview',
+        model: 'gemini-2.5-flash',
         contents: `Analise o seguinte comando de voz para um aplicativo de apontamento de horas. Extraia os horários de início e fim para os períodos da manhã, tarde e noite, e as horas alocadas para cada projeto. Retorne a resposta em formato JSON. Os horários devem ser no formato "HH:mm". As horas do projeto devem ser um número (ex: 2.5 para 2 horas e 30 minutos). Se uma informação não for mencionada, omita a chave correspondente.
 
 Projetos disponíveis: ${JSON.stringify(availableProjects.map(p => p.name))}
@@ -178,9 +175,7 @@ Comando de voz: "${transcript}"`,
         },
       });
       
-      // Fix: Direct access to response.text (property, not method)
-      const jsonStr = response.text?.trim() || '{}';
-      const parsedData: ParsedVoiceData = JSON.parse(jsonStr);
+      const parsedData: ParsedVoiceData = JSON.parse(response.text);
       
       const finalAllocations: ProjectTimeAllocation[] = (parsedData.projectAllocations || [])
         .map(alloc => {

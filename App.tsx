@@ -1,3 +1,4 @@
+
 import React, { useState, useMemo, useEffect, useCallback } from 'react';
 import { 
   format, subDays, startOfMonth, endOfMonth, 
@@ -36,7 +37,7 @@ type Theme = 'light' | 'dark';
 
 const SESSION_KEY = 'cms_user_id';
 
-// Helper robusto para gerar UUID v4
+// Helper para gerar UUID
 const generateUUID = () => {
     if (typeof crypto !== 'undefined' && crypto.randomUUID) {
         return crypto.randomUUID();
@@ -47,11 +48,6 @@ const generateUUID = () => {
     });
 };
 
-const isValidUUID = (uuid: string) => {
-    const regex = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
-    return typeof uuid === 'string' && regex.test(uuid);
-};
-
 const MainApp: React.FC<{ user: User; onLogout: () => void }> = ({ user, onLogout }) => {
   const [activeView, setActiveView] = useState<View>('timesheet');
   const [projects, setProjects] = useState<Project[]>([]);
@@ -59,7 +55,6 @@ const MainApp: React.FC<{ user: User; onLogout: () => void }> = ({ user, onLogou
   const [email, setEmail] = useState<string>('');
   const [theme, setTheme] = useState<Theme>('light');
   const [isLoadingData, setIsLoadingData] = useState(true);
-  const [isSaving, setIsSaving] = useState(false);
 
   const [isProjectFormOpen, setIsProjectFormOpen] = useState(false);
   const [projectToEdit, setProjectToEdit] = useState<Project | null>(null);
@@ -72,22 +67,22 @@ const MainApp: React.FC<{ user: User; onLogout: () => void }> = ({ user, onLogou
 
   // Initial Data Load
   const loadCloudData = useCallback(async () => {
-      setIsLoadingData(true);
-      try {
-          const [p, a, s] = await Promise.all([
-              fetchProjects(user.id),
-              fetchAllocations(user.id),
-              fetchSettings(user.id)
-          ]);
-          setProjects(p);
-          setAllocations(a);
-          setTheme(s.theme);
-          setEmail(s.email);
-      } catch (e) {
-          console.error("Erro ao carregar dados da nuvem", e);
-      } finally {
-          setIsLoadingData(false);
-      }
+    setIsLoadingData(true);
+    try {
+        const [p, a, s] = await Promise.all([
+            fetchProjects(user.id),
+            fetchAllocations(user.id),
+            fetchSettings(user.id)
+        ]);
+        setProjects(p);
+        setAllocations(a);
+        setTheme(s.theme);
+        setEmail(s.email);
+    } catch (e) {
+        console.error("Failed to load user data from Supabase", e);
+    } finally {
+        setIsLoadingData(false);
+    }
   }, [user.id]);
 
   useEffect(() => {
@@ -100,6 +95,7 @@ const MainApp: React.FC<{ user: User; onLogout: () => void }> = ({ user, onLogou
     root.classList.add(theme);
   }, [theme]);
 
+  // Save Settings when they change
   const handleThemeChange = (newTheme: Theme) => {
       setTheme(newTheme);
       saveSettings(user.id, { theme: newTheme });
@@ -113,8 +109,10 @@ const MainApp: React.FC<{ user: User; onLogout: () => void }> = ({ user, onLogou
       saveSettings(user.id, { email });
   }
 
+  // Daily reminder check
   useEffect(() => {
     if (isLoadingData) return;
+
     const yesterday = subDays(new Date(), 1);
     const yesterdayKey = format(yesterday, 'yyyy-MM-dd');
     const todayKey = format(new Date(), 'yyyy-MM-dd');
@@ -128,19 +126,14 @@ const MainApp: React.FC<{ user: User; onLogout: () => void }> = ({ user, onLogou
     }
   }, [allocations, isLoadingData]);
 
-  const handleSaveProject = async (projectData: Project) => {
+  const handleSaveProject = async (project: Project) => {
     try {
-        const projectToSave = {
-            ...projectData,
-            id: projectData.id.includes('-') ? projectData.id : generateUUID()
-        };
-        await saveProject(user.id, projectToSave);
+        await saveProject(user.id, project);
         setIsProjectFormOpen(false);
         setProjectToEdit(null);
-        const updatedProjects = await fetchProjects(user.id);
-        setProjects(updatedProjects);
-    } catch (e: any) {
-        alert(e.message || "Erro ao salvar projeto.");
+        loadCloudData();
+    } catch (e) {
+        alert("Erro ao salvar projeto no servidor.");
     }
   };
 
@@ -148,7 +141,7 @@ const MainApp: React.FC<{ user: User; onLogout: () => void }> = ({ user, onLogou
     try {
         await deleteProject(projectId);
         await clearAllocationsForProject(user.id, projectId, allocations);
-        await loadCloudData();
+        loadCloudData();
     } catch (e) {
         alert("Erro ao excluir projeto.");
     }
@@ -157,8 +150,7 @@ const MainApp: React.FC<{ user: User; onLogout: () => void }> = ({ user, onLogou
   const handleDeleteAllProjects = async () => {
     try {
         await deleteAllProjects(user.id);
-        setProjects([]);
-        setAllocations({}); 
+        loadCloudData();
     } catch (e) {
         alert("Erro ao limpar projetos.");
     }
@@ -170,7 +162,7 @@ const MainApp: React.FC<{ user: User; onLogout: () => void }> = ({ user, onLogou
     const updatedProject = { ...project, status: (project.status === 'active' ? 'inactive' : 'active') as 'active'|'inactive' };
     try {
         await saveProject(user.id, updatedProject);
-        setProjects(prev => prev.map(p => p.id === projectId ? updatedProject : p));
+        loadCloudData();
     } catch (e) {
         alert("Erro ao alterar status.");
     }
@@ -213,12 +205,11 @@ const MainApp: React.FC<{ user: User; onLogout: () => void }> = ({ user, onLogou
            for (const p of importedProjects) {
                await saveProject(user.id, p);
            }
-           const updated = await fetchProjects(user.id);
-           setProjects(updated);
+           loadCloudData();
            alert(`${importedProjects.length} projetos importados.`);
         }
       } catch (error) {
-        alert("Erro na importação.");
+        alert("Erro ao processar arquivo.");
       }
     };
     reader.readAsArrayBuffer(file);
@@ -235,41 +226,33 @@ const MainApp: React.FC<{ user: User; onLogout: () => void }> = ({ user, onLogou
 
   const handleSaveDailyEntry = async (entry: DailyEntry) => {
     if (!dateKey) return;
-    setIsSaving(true);
     try {
         await saveAllocation(user.id, dateKey, entry);
         setAllocations(prev => ({ ...prev, [dateKey]: entry }));
         setSelectedDay(null);
-    } catch (e: any) {
-        alert(e.message || "Erro ao salvar horas no Supabase.");
-    } finally {
-        setIsSaving(false);
+    } catch (e) {
+        alert("Erro ao salvar dados no Supabase. Verifique sua conexão.");
     }
   };
 
   const handleReplicateDailyEntry = async (entry: DailyEntry, targetDates: Date[]) => {
       if (!selectedDay || targetDates.length === 0) return;
-      setIsSaving(true);
       try {
           const savePromises = targetDates.map(date => {
               const key = format(date, 'yyyy-MM-dd');
               return saveAllocation(user.id, key, entry);
           });
           await Promise.all(savePromises);
-          const updatedAllocations = await fetchAllocations(user.id);
-          setAllocations(updatedAllocations);
-          alert("Replicado com sucesso!");
+          loadCloudData();
+          alert(`Replicado para ${targetDates.length} dias.`);
           setSelectedDay(null);
       } catch (e) {
-          alert("Erro ao replicar dados.");
-      } finally {
-          setIsSaving(false);
+          alert("Erro na replicação.");
       }
   };
 
   const handleDeleteDailyEntry = async () => {
     if (!dateKey) return;
-    setIsSaving(true);
     try {
         await deleteAllocation(user.id, dateKey);
         setAllocations(prev => {
@@ -280,8 +263,6 @@ const MainApp: React.FC<{ user: User; onLogout: () => void }> = ({ user, onLogou
         setSelectedDay(null);
     } catch (e) {
         alert("Erro ao excluir.");
-    } finally {
-        setIsSaving(false);
     }
   };
   
@@ -301,7 +282,9 @@ const MainApp: React.FC<{ user: User; onLogout: () => void }> = ({ user, onLogou
         try {
           const startTime = parse(shift.start, 'HH:mm', new Date());
           const endTime = parse(shift.end, 'HH:mm', new Date());
-          if (endTime > startTime) totalMinutes += differenceInMinutes(endTime, startTime);
+          if (endTime > startTime) {
+            totalMinutes += differenceInMinutes(endTime, startTime);
+          }
         } catch (e) {}
       }
     });
@@ -338,7 +321,7 @@ const MainApp: React.FC<{ user: User; onLogout: () => void }> = ({ user, onLogou
         return (
             <div className="flex flex-col items-center justify-center h-[60vh]">
                 <Loader2 className="animate-spin text-orange-500 mb-4" size={48} />
-                <p className="text-gray-500">Sincronizando com o Supabase...</p>
+                <p className="text-gray-500">Sincronizando com Supabase...</p>
             </div>
         );
     }
@@ -356,7 +339,7 @@ const MainApp: React.FC<{ user: User; onLogout: () => void }> = ({ user, onLogou
               onDelete={handleDeleteProject}
               onDeleteAll={handleDeleteAllProjects}
               userId={user.id}
-              refreshProjects={() => loadCloudData()}
+              onRefresh={loadCloudData}
             />
              <button 
                 onClick={() => { setProjectToEdit(null); setIsProjectFormOpen(true); }}
@@ -397,9 +380,9 @@ const MainApp: React.FC<{ user: User; onLogout: () => void }> = ({ user, onLogou
              <div className="bg-gray-100 dark:bg-gray-700 p-4 rounded-lg flex items-center">
                 <Cloud className="text-orange-500 mr-3" size={24} />
                 <div>
-                    <h2 className="text-lg font-semibold mb-1">Sincronização em Nuvem</h2>
+                    <h2 className="text-lg font-semibold mb-1">Dados em Nuvem</h2>
                     <p className="text-sm text-gray-600 dark:text-gray-400">
-                        Seus dados são salvos exclusivamente no Supabase para segurança total.
+                        Sua conta lkmgiinvoiqcdgbtoprz está sincronizada.
                     </p>
                 </div>
             </div>
@@ -426,7 +409,6 @@ const MainApp: React.FC<{ user: User; onLogout: () => void }> = ({ user, onLogou
                 onDelete={handleDeleteDailyEntry}
                 projects={projects}
                 previousEntry={previousEntry}
-                isSaving={isSaving}
               />
             </div>
           );
@@ -513,15 +495,15 @@ const MainApp: React.FC<{ user: User; onLogout: () => void }> = ({ user, onLogou
       <Modal isOpen={isProjectFormOpen} onClose={() => setIsProjectFormOpen(false)} title={projectToEdit ? 'Editar Projeto' : 'Novo Projeto'}>
         <ProjectForm onSave={handleSaveProject} onCancel={() => setIsProjectFormOpen(false)} projectToEdit={projectToEdit} />
       </Modal>
-       <Modal isOpen={showReminder} onClose={() => setShowReminder(false)} title="Lembrete de Apontamento">
-         <div className="text-center">
+       <Modal isOpen={showReminder} onClose={() => setShowReminder(false)} title="Lembrete">
+         <div className="text-center p-4">
             <AlertTriangle className="mx-auto h-12 w-12 text-yellow-400" />
-            <h3 className="mt-2 text-lg font-medium">Você não preencheu suas horas!</h3>
-            <p className="mt-2 text-sm text-gray-500 dark:text-gray-300">Ontem, {yesterdayDateString}, ficou sem registro.</p>
+            <h3 className="mt-2 text-lg font-medium">Faltou apontamento!</h3>
+            <p className="mt-2 text-sm text-gray-500">Ontem, {yesterdayDateString}, está vazio.</p>
             <div className="mt-4">
               <button
                 type="button"
-                className="inline-flex justify-center rounded-md border border-transparent bg-orange-600 px-4 py-2 text-sm font-medium text-white hover:bg-orange-700"
+                className="inline-flex justify-center rounded-md bg-orange-600 px-4 py-2 text-sm font-medium text-white hover:bg-orange-700"
                 onClick={() => {
                     const yesterday = subDays(new Date(), 1);
                     setCalendarDate(yesterday);
@@ -547,7 +529,7 @@ const App: React.FC = () => {
     const restoreSession = async () => {
         setLoadingSession(true);
         const savedId = localStorage.getItem(SESSION_KEY);
-        if (savedId && isValidUUID(savedId)) {
+        if (savedId) {
             try {
                 const user = await fetchUserById(savedId);
                 if (user) setCurrentUser(user);
@@ -568,10 +550,10 @@ const App: React.FC = () => {
   };
 
   const handleCreateUser = async (name: string, email: string, password: string) => {
-        const id = generateUUID();
-        const created = await createUser({ id, name, email, password });
-        setCurrentUser(created);
-        localStorage.setItem(SESSION_KEY, created.id);
+      const id = generateUUID();
+      const created = await createUser({ id, name, email, password });
+      setCurrentUser(created);
+      localStorage.setItem(SESSION_KEY, created.id);
   };
   
   const handleLogout = () => {
