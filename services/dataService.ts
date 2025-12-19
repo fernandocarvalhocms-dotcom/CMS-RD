@@ -3,19 +3,13 @@ import { supabase } from './supabase';
 import type { User, Project, AllAllocations, DailyEntry, TimeShift } from '../types';
 import { parse, differenceInMinutes } from 'date-fns';
 
-// ==========================================
-// CONFIGURAÇÃO DE CACHE (LEITURA APENAS PARA PERFORMANCE)
-// ==========================================
-const getKeyProjects = (userId: string) => `cms_data_${userId}_projects`;
-const getKeyAllocations = (userId: string) => `cms_data_${userId}_allocations`;
-const getKeySettings = (userId: string) => `cms_data_${userId}_settings`;
-
+// Validação de UUID para evitar erros de cast no Postgres
 const isValidUUID = (uuid: string) => {
     const regex = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
     return typeof uuid === 'string' && regex.test(uuid);
 };
 
-// Helper para calcular totais de horas (para colunas de resumo no DB)
+// Cálculo de totais para colunas de resumo no banco de dados
 const calculateTotals = (entry: DailyEntry) => {
     let workedMinutes = 0;
     const shifts = [entry.morning, entry.afternoon, entry.evening];
@@ -37,16 +31,7 @@ const calculateTotals = (entry: DailyEntry) => {
 };
 
 const logError = (context: string, error: any) => {
-    let msg = 'Erro desconhecido';
-    if (typeof error === 'string') msg = error;
-    else if (error?.message) msg = error.message;
-    else {
-        try {
-            msg = JSON.stringify(error);
-        } catch (e) {
-            msg = String(error);
-        }
-    }
+    const msg = error?.message || (typeof error === 'string' ? error : JSON.stringify(error));
     console.error(`[DataService] ${context}:`, msg);
 };
 
@@ -55,6 +40,7 @@ const logError = (context: string, error: any) => {
 // ==========================================
 
 export const fetchUserById = async (userId: string): Promise<User | null> => {
+  if (!isValidUUID(userId)) return null;
   try {
     const { data, error } = await supabase
       .from('app_users')
@@ -104,6 +90,7 @@ export const createUser = async (user: User): Promise<User> => {
 // ==========================================
 
 export const fetchProjects = async (userId: string): Promise<Project[]> => {
+  if (!isValidUUID(userId)) return [];
   try {
     const { data, error } = await supabase
       .from('projects')
@@ -112,23 +99,18 @@ export const fetchProjects = async (userId: string): Promise<Project[]> => {
 
     if (error) throw error;
 
-    if (data) {
-        const projects: Project[] = data.map((p: any) => ({
-            id: p.id,
-            name: p.name,
-            code: p.cost_center || '', 
-            client: p.client,
-            accountingId: p.id_contabil || '', 
-            status: p.status || 'active'
-        }));
-        localStorage.setItem(getKeyProjects(userId), JSON.stringify(projects));
-        return projects;
-    }
+    return data ? data.map((p: any) => ({
+        id: p.id,
+        name: p.name,
+        code: p.cost_center || '', 
+        client: p.client,
+        accountingId: p.id_contabil || '', 
+        status: p.status || 'active'
+    })) : [];
   } catch (err) {
       logError('fetchProjects', err);
+      throw err;
   }
-  const json = localStorage.getItem(getKeyProjects(userId));
-  return json ? JSON.parse(json) : [];
 };
 
 export const saveProject = async (userId: string, project: Project): Promise<boolean> => {
@@ -148,7 +130,10 @@ export const saveProject = async (userId: string, project: Project): Promise<boo
   }
 
   const { error } = await supabase.from('projects').upsert(payload);
-  if (error) throw error;
+  if (error) {
+      logError('saveProject', error);
+      throw error;
+  }
   return true;
 };
 
@@ -167,62 +152,42 @@ export const deleteAllProjects = async (userId: string): Promise<boolean> => {
 };
 
 // ==========================================
-// ALOCAÇÕES
+// ALOCAÇÕES (Sincronização 100% Supabase)
 // ==========================================
 
 export const fetchAllocations = async (userId: string): Promise<AllAllocations> => {
+  if (!isValidUUID(userId)) return {};
   try {
-    // CORREÇÃO: Usando 'work_date' e 'entry' (se 'data' não existe, tentamos 'entry')
-    // Com base no erro anterior, tentaremos usar o mapeamento solicitado originalmente: 'entry' para o JSON
+    // Tentativa com 'entry' pois 'data' retornou erro no banco do usuário
     const { data, error } = await supabase
         .from('allocations')
         .select('work_date, entry')
         .eq('user_id', userId);
 
-    if (error) {
-        // Fallback caso o erro persista (tentativa de 'data' se 'entry' falhar)
-        if (error.message?.includes("entry")) {
-            const { data: data2, error: error2 } = await supabase
-                .from('allocations')
-                .select('work_date, data')
-                .eq('user_id', userId);
-            if (!error2 && data2) {
-                const allocations: AllAllocations = {};
-                data2.forEach((row: any) => { if (row.work_date) allocations[row.work_date] = row.data; });
-                return allocations;
-            }
-        }
-        throw error;
-    }
+    if (error) throw error;
 
+    const allocations: AllAllocations = {};
     if (data) {
-        const allocations: AllAllocations = {};
         data.forEach((row: any) => {
-            if (row.work_date) {
-                allocations[row.work_date] = row.entry;
-            }
+            if (row.work_date) allocations[row.work_date] = row.entry;
         });
-        localStorage.setItem(getKeyAllocations(userId), JSON.stringify(allocations));
-        return allocations;
     }
+    return allocations;
   } catch (err) {
       logError('fetchAllocations', err);
+      throw err;
   }
-  const json = localStorage.getItem(getKeyAllocations(userId));
-  return json ? JSON.parse(json) : {};
 };
 
 export const saveAllocation = async (userId: string, date: string, entry: DailyEntry): Promise<boolean> => {
-  if (!isValidUUID(userId)) return false;
+  if (!isValidUUID(userId)) throw new Error("Sessão expirada.");
 
   const { hours_worked, hours_allocated } = calculateTotals(entry);
 
-  // Mapeamento corrigido: work_date e entry
-  // Se o Supabase reclamar que 'entry' não existe, tentaremos 'data'.
-  const payload: any = {
+  const payload = {
     user_id: userId,
     work_date: date,
-    entry: entry,
+    entry: entry, // Mapeamento corrigido para a coluna 'entry' do JSONB
     hours_worked,
     hours_allocated
   };
@@ -232,13 +197,6 @@ export const saveAllocation = async (userId: string, date: string, entry: DailyE
     .upsert(payload, { onConflict: 'user_id, work_date' });
 
   if (error) {
-      if (error.message?.includes("entry")) {
-          // Fallback para 'data'
-          const { error: error2 } = await supabase
-            .from('allocations')
-            .upsert({ ...payload, data: entry, entry: undefined }, { onConflict: 'user_id, work_date' });
-          if (!error2) return true;
-      }
       logError('saveAllocation', error);
       throw error;
   }
@@ -253,17 +211,18 @@ export const deleteAllocation = async (userId: string, date: string): Promise<bo
 };
 
 export const clearAllocationsForProject = async (userId: string, projectId: string, currentAllocations: AllAllocations): Promise<void> => {
-    const newAllocations = { ...currentAllocations };
-    let changed = false;
-    for (const date in newAllocations) {
-        const entry = newAllocations[date];
-        if (entry.projectAllocations.some(pa => pa.projectId === projectId)) {
-            entry.projectAllocations = entry.projectAllocations.filter(pa => pa.projectId !== projectId);
-            changed = true;
-        }
-    }
-    if (changed) {
-        const updates = Object.entries(newAllocations).map(([date, entry]) => saveAllocation(userId, date, entry));
+    const entriesToUpdate = Object.entries(currentAllocations).filter(([_, entry]) => 
+        entry.projectAllocations.some(pa => pa.projectId === projectId)
+    );
+
+    if (entriesToUpdate.length > 0) {
+        const updates = entriesToUpdate.map(([date, entry]) => {
+            const updatedEntry = {
+                ...entry,
+                projectAllocations: entry.projectAllocations.filter(pa => pa.projectId !== projectId)
+            };
+            return saveAllocation(userId, date, updatedEntry);
+        });
         await Promise.all(updates);
     }
 };
@@ -273,6 +232,7 @@ export const clearAllocationsForProject = async (userId: string, projectId: stri
 // ==========================================
 
 export const fetchSettings = async (userId: string): Promise<{ theme: 'light' | 'dark', email: string }> => {
+    if (!isValidUUID(userId)) return { theme: 'light', email: '' };
     try {
         const { data, error } = await supabase.from('user_settings').select('*').eq('user_id', userId).maybeSingle();
         if (error) throw error;

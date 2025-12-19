@@ -1,7 +1,7 @@
 
 import React, { useState, useRef } from 'react';
 import type { Project } from '../types';
-import { saveProject, fetchProjects } from '../services/dataService';
+import { saveProject } from '../services/dataService';
 
 // Icons from lucide-react
 import { Edit, Upload, Trash2, ShieldAlert, CloudDownload, Loader2 } from 'lucide-react';
@@ -13,8 +13,8 @@ interface ProjectListProps {
   onImport: (file: File) => void;
   onDelete: (projectId: string) => void;
   onDeleteAll: () => void;
-  userId?: string;
-  onRefresh?: () => void;
+  userId: string;
+  onRefresh: () => void;
 }
 
 const MONTHS = [
@@ -73,14 +73,6 @@ const ProjectList: React.FC<ProjectListProps> = ({ projects, onEdit, onToggleSta
     }
   };
 
-  const handleDeleteProject = (e: React.MouseEvent, projectId: string, projectName: string) => {
-      e.preventDefault();
-      e.stopPropagation();
-      if (window.confirm(`Tem certeza que deseja excluir o projeto "${projectName}"?`)) {
-          onDelete(projectId);
-      }
-  };
-
   const parseCSVLine = (text: string) => {
     const re_value = /(?!\s*$)\s*(?:'([^'\\]*(?:\\[\S\s][^'\\]*)*)'|"([^"\\]*(?:\\[\S\s][^"\\]*)*)"|([^,'"\s\\]*(?:\s+[^,'"\s\\]+)*))\s*(?:,|$)/g;
     const a = [];
@@ -95,7 +87,7 @@ const ProjectList: React.FC<ProjectListProps> = ({ projects, onEdit, onToggleSta
 
   const handleGoogleSheetSync = async () => {
     if (!userId) {
-        alert("Sessão inválida.");
+        alert("Erro: Sessão não identificada.");
         return;
     }
 
@@ -107,15 +99,16 @@ const ProjectList: React.FC<ProjectListProps> = ({ projects, onEdit, onToggleSta
       const url = `https://docs.google.com/spreadsheets/d/${GOOGLE_SHEET_ID}/gviz/tq?tqx=out:csv&sheet=${encodedSheetName}`;
       
       const response = await fetch(url);
-      if (!response.ok) throw new Error(`Não foi possível acessar a aba "${sheetName}".`);
+      if (!response.ok) throw new Error(`Aba "${sheetName}" não disponível.`);
       
       const text = await response.text();
       const rows = text.split('\n').map(line => parseCSVLine(line));
 
+      // 1. Extrai apenas Coluna D (index 3) a partir da Linha 2 (index 1)
       const importedData = rows
-        .filter((row, index) => {
-            if (index === 0 || row.length < 4) return false;
-            const name = row[3]?.trim() || '';
+        .slice(1) // Ignora a primeira linha (A1, B1, C1, D1)
+        .filter(row => {
+            const name = row[3]?.trim() || ''; // Coluna D
             if (!name) return false;
             const lower = name.toLowerCase();
             return !['projeto', 'total', 'subtotal', 'descrição'].some(kw => lower.includes(kw));
@@ -125,19 +118,20 @@ const ProjectList: React.FC<ProjectListProps> = ({ projects, onEdit, onToggleSta
             code: row[0]?.trim() || 'S/C',
             accountingId: row[1]?.trim() || 'S/ID',
             client: row[2]?.trim() || 'Geral',
-            name: row[3]?.trim(),
+            name: row[3]?.trim() || '', // Coluna D
             status: 'active' as const
         }));
 
       if (importedData.length > 0) {
-        if (window.confirm(`Isso irá marcar todos os seus projetos atuais como INATIVOS e carregar apenas os ${importedData.length} projetos de ${sheetName}. Deseja continuar?`)) {
-            // 1. Inativar projetos ativos atuais
+        if (window.confirm(`Sincronizar ${importedData.length} projetos do mês de ${sheetName}? Todos os projetos atuais serão inativados.`)) {
+            
+            // 2. Inativa todos os projetos ativos atuais do usuário
             const activeNow = projects.filter(p => p.status === 'active');
             for (const p of activeNow) {
                 await saveProject(userId, { ...p, status: 'inactive' });
             }
 
-            // 2. Importar novos projetos (upsert)
+            // 3. Salva os novos projetos da Coluna D
             for (const p of importedData) {
                 const existing = projects.find(ep => ep.name === p.name && ep.client === p.client);
                 await saveProject(userId, {
@@ -146,11 +140,11 @@ const ProjectList: React.FC<ProjectListProps> = ({ projects, onEdit, onToggleSta
                 });
             }
 
-            if (onRefresh) onRefresh();
-            alert("Sincronização concluída com sucesso!");
+            onRefresh();
+            alert("Sincronização concluída! Lista de projetos atualizada.");
         }
       } else {
-        alert(`Nenhum projeto válido encontrado na aba "${sheetName}".`);
+        alert(`Nenhum projeto encontrado na Coluna D da aba "${sheetName}".`);
       }
     } catch (error: any) {
       alert(`Erro na sincronização: ${error.message}`);
@@ -164,22 +158,21 @@ const ProjectList: React.FC<ProjectListProps> = ({ projects, onEdit, onToggleSta
   return (
     <div className="space-y-6">
        <div className="bg-white dark:bg-gray-800 border border-green-200 dark:border-green-800 p-4 rounded-lg shadow-sm">
-          <h3 className="font-semibold text-green-700 dark:text-green-400 flex items-center mb-3 text-sm">
+          <h3 className="font-semibold text-green-700 dark:text-green-400 flex items-center mb-1 text-sm">
             <CloudDownload size={20} className="mr-2"/> 
-            Sincronização de Projetos por Mês
+            Sincronizar Projetos do Mês
           </h3>
+          <p className="text-[10px] text-gray-500 mb-3 uppercase tracking-wider">Lê Coluna D a partir da Linha 2</p>
           <div className="flex gap-2">
-            <div className="relative flex-1">
-                <select
-                    value={selectedMonth}
-                    onChange={(e) => setSelectedMonth(Number(e.target.value))}
-                    className="block w-full px-3 py-2 text-sm bg-gray-50 dark:bg-gray-900 border border-gray-300 dark:border-gray-600 rounded-md text-gray-900 dark:text-white"
-                >
-                    {MONTHS.map((month, index) => (
-                        <option key={index} value={index}>{month}</option>
-                    ))}
-                </select>
-            </div>
+            <select
+                value={selectedMonth}
+                onChange={(e) => setSelectedMonth(Number(e.target.value))}
+                className="block flex-1 px-3 py-2 text-sm bg-gray-50 dark:bg-gray-900 border border-gray-300 dark:border-gray-600 rounded-md text-gray-900 dark:text-white"
+            >
+                {MONTHS.map((month, index) => (
+                    <option key={index} value={index}>{month}</option>
+                ))}
+            </select>
             <button
                 onClick={handleGoogleSheetSync}
                 disabled={isSyncing}
@@ -191,22 +184,22 @@ const ProjectList: React.FC<ProjectListProps> = ({ projects, onEdit, onToggleSta
        </div>
 
        <div className="bg-gray-100 dark:bg-gray-700 p-4 rounded-lg space-y-2">
-            <h3 className="font-semibold text-gray-800 dark:text-white flex items-center text-xs"><Upload size={16} className="mr-2"/>Importar de Planilha Local</h3>
+            <h3 className="font-semibold text-gray-800 dark:text-white flex items-center text-xs"><Upload size={16} className="mr-2"/>Importação Manual</h3>
             <input type="file" ref={fileInputRef} onChange={handleFileChange} className="hidden" accept=".xlsx, .xls, .csv" />
             <button onClick={() => fileInputRef.current?.click()} className="w-full mt-2 px-4 py-2 bg-gray-200 dark:bg-gray-600 text-gray-800 dark:text-white rounded-md text-xs font-medium">
-                Selecionar Arquivo Excel
+                Selecionar Arquivo
             </button>
         </div>
         
       <div className="bg-gray-100 dark:bg-gray-700 p-4 rounded-lg text-center">
-        <p className="text-sm text-gray-600 dark:text-gray-400">Projetos Vigentes</p>
+        <p className="text-xs text-gray-600 dark:text-gray-400 uppercase font-bold">Projetos Ativos</p>
         <p className="text-3xl font-bold text-orange-500 dark:text-orange-400">{activeProjectsCount}</p>
       </div>
 
       <div className="flex justify-center mb-4">
         <div className="bg-gray-200 dark:bg-gray-700 rounded-full p-1 flex">
-          <button onClick={() => setShowInactive(false)} className={`px-4 py-1 rounded-full text-xs font-semibold ${!showInactive ? 'bg-orange-500 text-white' : 'text-gray-600 dark:text-gray-300'}`}>Ativos</button>
-          <button onClick={() => setShowInactive(true)} className={`px-4 py-1 rounded-full text-xs font-semibold ${showInactive ? 'bg-orange-500 text-white' : 'text-gray-600 dark:text-gray-300'}`}>Inativos</button>
+          <button onClick={() => setShowInactive(false)} className={`px-6 py-1 rounded-full text-xs font-semibold ${!showInactive ? 'bg-orange-500 text-white' : 'text-gray-600 dark:text-gray-300'}`}>Ativos</button>
+          <button onClick={() => setShowInactive(true)} className={`px-6 py-1 rounded-full text-xs font-semibold ${showInactive ? 'bg-orange-500 text-white' : 'text-gray-600 dark:text-gray-300'}`}>Inativos</button>
         </div>
       </div>
 
@@ -228,7 +221,7 @@ const ProjectList: React.FC<ProjectListProps> = ({ projects, onEdit, onToggleSta
                     </div>
                   </label>
                   <button onClick={() => onEdit(project)} className="text-gray-500 dark:text-gray-400 hover:text-orange-500"><Edit size={20} /></button>
-                  <button onClick={(e) => handleDeleteProject(e, project.id, project.name)} className="text-gray-500 dark:text-gray-400 hover:text-red-500"><Trash2 size={20} /></button>
+                  <button onClick={(e) => { e.preventDefault(); if(window.confirm('Excluir?')) onDelete(project.id); }} className="text-gray-500 dark:text-gray-400 hover:text-red-500"><Trash2 size={20} /></button>
                 </div>
               </li>
           );
@@ -237,7 +230,7 @@ const ProjectList: React.FC<ProjectListProps> = ({ projects, onEdit, onToggleSta
 
        <div className="mt-8 border-t border-red-500/30 pt-4">
             <button onClick={handleDeleteAllClick} className="w-full mt-2 px-4 py-2 bg-red-800 text-white rounded-md font-semibold flex items-center justify-center text-sm">
-               <ShieldAlert size={18} className="mr-2"/> Limpar Base de Projetos
+               <ShieldAlert size={18} className="mr-2"/> Limpar Tudo
             </button>
         </div>
     </div>
