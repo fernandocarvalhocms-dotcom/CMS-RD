@@ -142,7 +142,6 @@ export const bulkSaveProjects = async (userId: string, projectsToSave: Project[]
             status: 'active'
         }));
 
-        // Usamos upsert para evitar erros de duplicidade se o projeto já existir
         const { error } = await supabase.from('projects').upsert(payload);
         if (error) throw error;
         return true;
@@ -200,8 +199,8 @@ export const fetchAllocations = async (userId: string): Promise<AllAllocations> 
 
 export const saveAllocation = async (userId: string, date: string, entry: DailyEntry): Promise<boolean> => {
   try {
-      // Certifique-se de que a tabela 'allocations' NÃO possui uma coluna project_id obrigatória.
-      // O modelo salva todo o objeto 'entry' (que contém as alocações) na coluna JSONB 'data'.
+      // Nota importante para o banco: Certifique-se de que a coluna 'project_id' foi removida.
+      // O Upsert usa a restrição UNIQUE(user_id, work_date).
       const { error } = await supabase
         .from('allocations')
         .upsert({
