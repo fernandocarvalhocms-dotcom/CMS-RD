@@ -34,7 +34,7 @@ export type AllAllocations = {
 };
 
 
-export type View = 'timesheet' | 'projects' | 'reports' | 'settings';
+export type View = 'instructions' | 'timesheet' | 'projects' | 'reports' | 'settings';
 
 export interface User {
   id: string;

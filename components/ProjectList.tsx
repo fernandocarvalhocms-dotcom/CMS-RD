@@ -1,8 +1,11 @@
+
 import React, { useState, useRef } from 'react';
 import type { Project } from '../types';
+import { read, utils } from 'xlsx';
 
 // Icons from lucide-react
-import { Edit, Upload, Trash2, ShieldAlert, CloudDownload, Loader2, Calendar } from 'lucide-react';
+import { Edit, Upload, Trash2, ShieldAlert, CloudDownload, Loader2, Calendar, CheckCircle2 } from 'lucide-react';
+import { generateUUID } from '../utils/formatters';
 
 interface ProjectListProps {
   projects: Project[];
@@ -11,6 +14,8 @@ interface ProjectListProps {
   onImport: (file: File) => void;
   onDelete: (projectId: string) => void;
   onDeleteAll: () => void;
+  selectedMonth: number;
+  setSelectedMonth: (month: number) => void;
 }
 
 const MONTHS = [
@@ -18,54 +23,60 @@ const MONTHS = [
   'Julho', 'Agosto', 'Setembro', 'Outubro', 'Novembro', 'Dezembro'
 ];
 
-// ID da planilha fornecido pelo usuário
+/**
+ * GIDs oficiais da planilha.
+ * NOVEMBRO corrigido para 0
+ */
+const MONTH_GIDS: Record<number, string> = {
+  0: '1235276009', // JANEIRO
+  1: '1095746691', // FEVEREIRO
+  2: '944408049',  // MARÇO
+  3: '746234678',  // ABRIL
+  4: '458612630',  // MAIO
+  5: '453626594',  // JUNHO
+  6: '341519548',  // JULHO
+  7: '2038419421', // AGOSTO
+  8: '1466302051', // SETEMBRO
+  9: '1346291219', // OUTUBRO
+  10: '0',  // NOVEMBRO (Corrigido: era 1186717551)
+  11: '1138224182' // DEZEMBRO
+};
+
 const GOOGLE_SHEET_ID = '1SjHoaTjNMDPsdtOSLJB1Hte38G8w2yZCftz__Nc4d-s';
 
-// Helper para exibição inteligente (Mesma lógica do DayEntryForm)
 const getProjectDisplay = (project: Project) => {
     const isNameNumeric = /^\d/.test(project.name.trim());
     const isClientNumeric = /^\d/.test(project.client.trim());
 
-    // Construção dinâmica do subtítulo para ocultar "S/C" e "S/ID"
     const subtitleParts = [];
-
-    // Lógica inversa ao título: se o título é o Cliente, o subtítulo começa com o Nome, e vice-versa.
     if (isNameNumeric && !isClientNumeric) {
         subtitleParts.push(project.name);
     } else {
         subtitleParts.push(project.client);
     }
 
-    // Só adiciona o Centro de Custo se não for o padrão "S/C"
     if (project.code && project.code !== 'S/C') {
         subtitleParts.push(`CC: ${project.code}`);
     }
 
-    // Só adiciona o ID Contábil se não for o padrão "S/ID"
     if (project.accountingId && project.accountingId !== 'S/ID') {
         subtitleParts.push(`ID: ${project.accountingId}`);
     }
 
     const subtitle = subtitleParts.join(' • ');
 
-    // Se o Nome começa com número (código) e Cliente é texto, usamos Cliente como Título Principal
     if (isNameNumeric && !isClientNumeric) {
-        return {
-            title: project.client,
-            subtitle: subtitle
-        };
+        return { title: project.client, subtitle: subtitle };
     }
     
-    // Caso padrão
-    return {
-        title: project.name,
-        subtitle: subtitle
-    };
+    return { title: project.name, subtitle: subtitle };
 };
 
-const ProjectList: React.FC<ProjectListProps> = ({ projects, onEdit, onToggleStatus, onImport, onDelete, onDeleteAll }) => {
+const ProjectList: React.FC<ProjectListProps> = ({ 
+  projects, onEdit, onToggleStatus, onImport, onDelete, onDeleteAll,
+  selectedMonth, setSelectedMonth
+}) => {
   const [showInactive, setShowInactive] = useState(false);
-  const [selectedMonth, setSelectedMonth] = useState(new Date().getMonth());
   const [isSyncing, setIsSyncing] = useState(false);
   
   const fileInputRef = useRef<HTMLInputElement>(null);
@@ -75,119 +86,74 @@ const ProjectList: React.FC<ProjectListProps> = ({ projects, onEdit, onToggleSta
     const file = event.target.files?.[0];
     if (file) {
       onImport(file);
-      if (fileInputRef.current) {
-        fileInputRef.current.value = '';
-      }
+      if (fileInputRef.current) fileInputRef.current.value = '';
     }
   };
   
-  const handleDeleteAllClick = () => {
-    if (window.confirm('Tem certeza que deseja excluir TODOS os projetos? Esta ação não pode ser desfeita.')) {
-      onDeleteAll();
-    }
-  };
-
-  const handleDeleteProject = (e: React.MouseEvent, projectId: string, projectName: string) => {
-      e.preventDefault();
-      e.stopPropagation(); // Garante que o clique não propague para o item da lista
-      if (window.confirm(`Tem certeza que deseja excluir o projeto "${projectName}"?`)) {
-          onDelete(projectId);
-      }
-  };
-
-  const parseCSVLine = (text: string) => {
-    const re_valid = /^\s*(?:'[^'\\]*(?:\\[\S\s][^'\\]*)*'|"[^"\\]*(?:\\[\S\s][^"\\]*)*"|[^,'"\s\\]*(?:\s+[^,'"\s\\]+)*)\s*(?:,\s*(?:'[^'\\]*(?:\\[\S\s][^'\\]*)*'|"[^"\\]*(?:\\[\S\s][^"\\]*)*"|[^,'"\s\\]*(?:\s+[^,'"\s\\]+)*)\s*)*$/;
-    const re_value = /(?!\s*$)\s*(?:'([^'\\]*(?:\\[\S\s][^'\\]*)*)'|"([^"\\]*(?:\\[\S\s][^"\\]*)*)"|([^,'"\s\\]*(?:\s+[^,'"\s\\]+)*))\s*(?:,|$)/g;
-    
-    const a = [];
-    text.replace(re_value, function(m0, m1, m2, m3) {
-      if (m1 !== undefined) a.push(m1.replace(/\\'/g, "'"));
-      else if (m2 !== undefined) a.push(m2.replace(/\\"/g, '"'));
-      else if (m3 !== undefined) a.push(m3);
-      return '';
-    });
-    if (/,\s*$/.test(text)) a.push('');
-    return a;
-  };
-
   const handleGoogleSheetSync = async () => {
-    setIsSyncing(true);
     const sheetName = MONTHS[selectedMonth];
+    const gid = MONTH_GIDS[selectedMonth];
+    console.log(`[DEBUG SYNC] Mês: ${sheetName} | GID Utilizado: ${gid}`);
+    
+    setIsSyncing(true);
     
     try {
-      const encodedSheetName = encodeURIComponent(sheetName);
-      const url = `https://docs.google.com/spreadsheets/d/${GOOGLE_SHEET_ID}/gviz/tq?tqx=out:csv&sheet=${encodedSheetName}`;
+      const url = `https://docs.google.com/spreadsheets/d/${GOOGLE_SHEET_ID}/gviz/tq?tqx=out:csv&gid=${gid}`;
+      const response = await fetch(url, {
+          method: 'GET',
+          mode: 'cors',
+          cache: 'no-cache'
+      });
       
-      const response = await fetch(url);
+      if (!response.ok) throw new Error(`HTTP ${response.status}: Falha ao acessar a planilha.`);
       
-      if (!response.ok) {
-         throw new Error(`Não foi possível acessar a aba "${sheetName}". Verifique se ela existe na planilha.`);
+      const csvText = await response.text();
+      const workbook = read(csvText, { type: 'string' });
+      const firstSheet = workbook.Sheets[workbook.SheetNames[0]];
+      const rows = utils.sheet_to_json<any[]>(firstSheet, { header: 1, defval: '' });
+
+      console.log(`[DEBUG SYNC] Total de linhas brutas: ${rows.length}`);
+
+      const importedProjects: Project[] = [];
+      
+      // Itera a partir da linha 2 (index 1)
+      for (let i = 1; i < rows.length; i++) {
+          const row = rows[i];
+          if (!row || row.length < 4) continue;
+          
+          const projectName = String(row[3] || '').trim();
+          
+          // Se a Coluna D (index 3) não estiver vazia, captura.
+          if (projectName !== '') {
+              importedProjects.push({
+                  id: generateUUID(),
+                  code: String(row[0] || '').trim() || 'S/C',
+                  accountingId: String(row[1] || '').trim() || 'S/ID',
+                  client: String(row[2] || '').trim() || 'Geral',
+                  name: projectName,
+                  status: 'active' as const,
+              });
+          }
       }
-      
-      const buffer = await response.arrayBuffer();
-      const decoder = new TextDecoder('utf-8');
-      const text = decoder.decode(buffer);
 
-      if (text.trim().startsWith('<!DOCTYPE html>') || text.includes('google.com/accounts')) {
-          throw new Error(`A aba "${sheetName}" não foi encontrada ou a planilha não está pública.`);
-      }
-
-      const rows = text.split('\n').map(line => parseCSVLine(line));
-
-      const importedProjects: Project[] = rows
-        .filter((row, index) => {
-            // IGNORA A PRIMEIRA LINHA (CABEÇALHO - D1)
-            if (index === 0) return false;
-
-            if (row.length < 4) return false;
-            const colD = row[3] ? row[3].trim() : '';
-            if (colD.length === 0) return false;
-            
-            const lowerD = colD.toLowerCase();
-            // Mantém verificações de segurança para garantir que não importamos outros cabeçalhos ou totais perdidos
-            const headers = ['projeto', 'operação', 'operacao', 'descrição', 'descricao', 'nome do projeto'];
-            if (headers.includes(lowerD)) return false;
-            if (lowerD.startsWith('total') || lowerD.startsWith('subtotal')) return false;
-            return true;
-        })
-        .map((row, index) => {
-           const clean = (val: string) => val ? val.trim() : '';
-           const code = clean(row[0]) || 'S/C';
-           const accountingId = clean(row[1]) || 'S/ID';
-           const client = clean(row[2]) || 'Geral';
-           const name = clean(row[3]); 
-
-           return {
-            id: `gsheet-${selectedMonth}-${index}-${Date.now()}`,
-            code,
-            accountingId,
-            client,
-            name,
-            status: 'active',
-          };
-        });
+      console.log(`[DEBUG SYNC] Total de projetos filtrados: ${importedProjects.length}`);
 
       if (importedProjects.length > 0) {
-        const header = "Centro de custo,ID contabil,Projeto,cliente";
-        const escapeCsv = (val: string) => {
-            if (val.includes(',') || val.includes('"') || val.includes('\n')) {
-                return `"${val.replace(/"/g, '""')}"`;
-            }
-            return val;
-        };
-        const csvContent = '\uFEFF' + [
-            header,
-            ...importedProjects.map(p => `${escapeCsv(p.code)},${escapeCsv(p.accountingId)},${escapeCsv(p.name)},${escapeCsv(p.client)}`)
-        ].join('\n');
+        const header = "Centro de custo,ID contabil,cliente,Projeto";
+        const csvRows = importedProjects.map(p => `"${p.code}","${p.accountingId}","${p.client}","${p.name}"`);
+        const csvContent = '\uFEFF' + [header, ...csvRows].join('\n');
+        
         const blob = new Blob([csvContent], { type: 'text/csv;charset=utf-8' });
-        const file = new File([blob], `importacao_${sheetName}.csv`);
+        const file = new File([blob], `sync_${sheetName}.csv`);
+        
         onImport(file);
+        alert(`Sucesso!\n${importedProjects.length} operações carregadas.`);
       } else {
-        alert(`Nenhum projeto válido encontrado na coluna D da aba "${sheetName}".`);
+        alert(`Nenhuma operação encontrada na aba "${sheetName}".`);
       }
     } catch (error: any) {
-      console.error(error);
-      alert(`Erro na sincronização: ${error.message || 'Verifique a conexão e se a planilha é pública.'}`);
+      console.error("[DEBUG SYNC ERROR]", error);
+      alert(`Erro na sincronização: ${error.message}`);
     } finally {
       setIsSyncing(false);
     }
@@ -197,143 +163,138 @@ const ProjectList: React.FC<ProjectListProps> = ({ projects, onEdit, onToggleSta
 
   return (
     <div className="space-y-6">
-       
-       {/* Google Sheets Import Section */}
-       <div className="bg-white dark:bg-gray-800 border border-green-200 dark:border-green-800 p-4 rounded-lg shadow-sm">
-          <h3 className="font-semibold text-green-700 dark:text-green-400 flex items-center mb-3">
-            <CloudDownload size={20} className="mr-2"/> 
-            Sincronizar com Google Sheets
-          </h3>
-          <p className="text-xs text-gray-500 dark:text-gray-400 mb-4">
-             Busca projetos na aba <strong>{MONTHS[selectedMonth]}</strong> da planilha online. <br/>
-             <span className="opacity-75">Lendo operações da <strong>Coluna D</strong>.</span>
-          </p>
+       {/* Painel de Sincronização Google Sheets */}
+       <div className="bg-white dark:bg-gray-800 border-2 border-green-500/30 p-5 rounded-2xl shadow-sm">
+          <div className="flex items-center gap-3 mb-4">
+             <div className="bg-green-100 dark:bg-green-900/30 p-2 rounded-lg text-green-600 dark:text-green-400">
+                <CloudDownload size={24} />
+             </div>
+             <div>
+                <h3 className="font-bold text-gray-900 dark:text-white">Sincronização Online</h3>
+                <p className="text-xs text-gray-500 dark:text-gray-400">Captura operações da Coluna D</p>
+             </div>
+          </div>
           
-          <div className="flex gap-2">
-            <div className="relative flex-1">
-                <div className="absolute inset-y-0 left-0 pl-3 flex items-center pointer-events-none">
-                  <Calendar size={16} className="text-gray-500" />
-                </div>
-                <select
-                    value={selectedMonth}
-                    onChange={(e) => setSelectedMonth(Number(e.target.value))}
-                    className="block w-full pl-10 pr-3 py-2 text-sm bg-gray-50 dark:bg-gray-900 border border-gray-300 dark:border-gray-600 rounded-md focus:ring-green-500 focus:border-green-500 text-gray-900 dark:text-white"
-                >
-                    {MONTHS.map((month, index) => (
-                        <option key={index} value={index}>{month}</option>
-                    ))}
-                </select>
-            </div>
+          <div className="flex gap-3">
+            <select
+                value={selectedMonth}
+                onChange={(e) => setSelectedMonth(Number(e.target.value))}
+                className="flex-1 px-4 py-2 bg-gray-50 dark:bg-gray-700 border border-gray-200 dark:border-gray-600 rounded-xl focus:ring-2 focus:ring-green-500 text-gray-900 dark:text-white outline-none"
+            >
+                {MONTHS.map((month, index) => (
+                    <option key={index} value={index}>{month}</option>
+                ))}
+            </select>
             
             <button
                 onClick={handleGoogleSheetSync}
                 disabled={isSyncing}
-                className="px-4 py-2 bg-green-600 text-white text-sm rounded-md hover:bg-green-500 transition-colors font-semibold flex items-center disabled:opacity-70 disabled:cursor-not-allowed min-w-[130px] justify-center"
+                className="px-6 py-2 bg-green-600 text-white font-bold rounded-xl hover:bg-green-700 transition-all flex items-center justify-center disabled:opacity-50 shadow-md active:scale-95"
             >
-                {isSyncing ? <Loader2 size={16} className="animate-spin mr-2"/> : <CloudDownload size={16} className="mr-2"/>}
+                {isSyncing ? <Loader2 size={18} className="animate-spin mr-2"/> : <CloudDownload size={18} className="mr-2"/>}
                 {isSyncing ? 'Buscando...' : 'Sincronizar'}
             </button>
           </div>
        </div>
 
-       {/* Existing Excel Import */}
-       <div className="bg-gray-100 dark:bg-gray-700 p-4 rounded-lg space-y-2">
-            <h3 className="font-semibold text-gray-800 dark:text-white flex items-center text-sm"><Upload size={16} className="mr-2"/>Importar via Excel (Manual)</h3>
-            <p className="text-xs text-gray-600 dark:text-gray-400">
-                Arquivo (.xlsx) com colunas: Centro de custo, ID contabil, Projeto, cliente.
-            </p>
-            <input
-                type="file"
-                ref={fileInputRef}
-                onChange={handleFileChange}
-                className="hidden"
-                accept=".xlsx, .xls, .csv"
-            />
-            <button
-                onClick={() => fileInputRef.current?.click()}
-                className="w-full mt-2 px-4 py-2 bg-gray-200 dark:bg-gray-600 text-gray-800 dark:text-white rounded-md hover:bg-gray-300 dark:hover:bg-gray-500 transition-colors text-sm font-medium flex items-center justify-center"
-            >
-                Selecionar Arquivo Local
-            </button>
-        </div>
-        
-      <div className="bg-gray-100 dark:bg-gray-700 p-4 rounded-lg text-center">
-        <p className="text-lg text-gray-800 dark:text-white">Total de Projetos Ativos</p>
-        <p className="text-3xl font-bold text-orange-500 dark:text-orange-400">{activeProjectsCount}</p>
-      </div>
+       {/* Resumo de Operações Carregadas */}
+       <div className="grid grid-cols-2 gap-4">
+          <div className="bg-orange-50 dark:bg-orange-900/10 p-4 rounded-2xl border border-orange-200 dark:border-orange-800 text-center">
+            <p className="text-xs font-bold text-orange-600 dark:text-orange-400 uppercase tracking-wider mb-1">Total Ativos</p>
+            <p className="text-3xl font-black text-orange-700 dark:text-orange-300">{activeProjectsCount}</p>
+          </div>
+          <div className="bg-gray-50 dark:bg-gray-800 p-4 rounded-2xl border border-gray-200 dark:border-gray-700 text-center flex flex-col justify-center items-center">
+             <CheckCircle2 className={`mb-1 ${activeProjectsCount >= 180 ? 'text-green-500' : 'text-gray-400'}`} size={20} />
+             <p className="text-[10px] text-gray-500 uppercase font-bold">Status Carga</p>
+          </div>
+       </div>
 
-      <div className="flex justify-center mb-4">
-        <div className="bg-gray-200 dark:bg-gray-700 rounded-full p-1 flex">
+       {/* Filtros de Lista */}
+       <div className="flex justify-center">
+        <div className="bg-gray-100 dark:bg-gray-700 rounded-full p-1 flex shadow-inner">
           <button
             onClick={() => setShowInactive(false)}
-            className={`px-4 py-1 rounded-full text-sm font-semibold ${!showInactive ? 'bg-orange-500 text-white' : 'text-gray-600 dark:text-gray-300'}`}
+            className={`px-6 py-1.5 rounded-full text-xs font-bold transition-all ${!showInactive ? 'bg-orange-500 text-white shadow-lg' : 'text-gray-500 dark:text-gray-400 hover:text-orange-400'}`}
           >
             Ativos
           </button>
           <button
             onClick={() => setShowInactive(true)}
-            className={`px-4 py-1 rounded-full text-sm font-semibold ${showInactive ? 'bg-orange-500 text-white' : 'text-gray-600 dark:text-gray-300'}`}
+            className={`px-6 py-1.5 rounded-full text-xs font-bold transition-all ${showInactive ? 'bg-orange-500 text-white shadow-lg' : 'text-gray-500 dark:text-gray-400 hover:text-orange-400'}`}
           >
             Inativos
           </button>
         </div>
       </div>
+
+      {/* Lista de Projetos */}
       {filteredProjects.length === 0 ? (
-        <p className="text-center text-gray-500 dark:text-gray-400">Nenhum projeto {showInactive ? 'inativo' : 'ativo'}.</p>
+        <div className="text-center py-12 bg-white dark:bg-gray-800 rounded-3xl border-2 border-dashed border-gray-200 dark:border-gray-700">
+           <Calendar className="mx-auto mb-3 opacity-20" size={48} />
+           <p className="text-gray-500 font-medium">Nenhuma operação encontrada.</p>
+           <p className="text-xs text-gray-400 mt-1">Utilize a sincronização acima para carregar os dados.</p>
+        </div>
       ) : (
-        <ul className="divide-y divide-gray-200 dark:divide-gray-700">
+        <div className="space-y-3">
           {filteredProjects.map(project => {
             const display = getProjectDisplay(project);
             return (
-                <li key={project.id} className="p-4 flex justify-between items-center bg-gray-100 dark:bg-gray-700 my-2 rounded-lg">
+                <div key={project.id} className="p-4 bg-white dark:bg-gray-800 rounded-2xl shadow-sm border border-gray-100 dark:border-gray-700 flex justify-between items-center group hover:border-orange-200 dark:hover:border-orange-900 transition-all">
                   <div className="flex-1 min-w-0 pr-4">
-                    {/* TÍTULO GRANDE (Nome Real ou Cliente se o nome for código) */}
-                    <p className="font-bold text-lg text-gray-800 dark:text-white truncate">{display.title}</p>
-                    
-                    {/* SUBTÍTULO com detalhes */}
-                    <p className="text-sm text-gray-500 dark:text-gray-400 truncate mt-1">
+                    <p className="font-bold text-gray-900 dark:text-white truncate text-lg leading-tight">{display.title}</p>
+                    <p className="text-[11px] text-gray-500 dark:text-gray-400 font-medium mt-1 truncate">
                       {display.subtitle}
                     </p>
                   </div>
-                  <div className="flex items-center space-x-3">
-                    <label htmlFor={`status-${project.id}`} className="flex items-center cursor-pointer" title={project.status === 'active' ? 'Marcar como inativo' : 'Marcar como ativo'}>
-                      <div className="relative">
-                        <input 
-                          type="checkbox" 
-                          id={`status-${project.id}`} 
-                          className="sr-only" 
-                          checked={project.status === 'active'}
-                          onChange={() => onToggleStatus(project.id)}
-                        />
-                        <div className={`block w-14 h-8 rounded-full transition-colors ${project.status === 'active' ? 'bg-orange-500' : 'bg-gray-400 dark:bg-gray-600'}`}></div>
-                        <div className={`dot absolute left-1 top-1 bg-white w-6 h-6 rounded-full transition-transform ${project.status === 'active' ? 'transform translate-x-6' : ''}`}></div>
-                      </div>
-                    </label>
-                    <button onClick={() => onEdit(project)} className="text-gray-500 dark:text-gray-400 hover:text-orange-500 dark:hover:text-orange-400 transition-colors" title="Editar">
-                      <Edit size={20} />
+                  <div className="flex items-center gap-2">
+                    <button 
+                      onClick={() => onToggleStatus(project.id)}
+                      className={`p-2 rounded-xl transition-colors ${project.status === 'active' ? 'text-green-500 bg-green-50 dark:bg-green-900/20' : 'text-gray-400 bg-gray-100 dark:bg-gray-800'}`}
+                    >
+                      <Calendar size={18} />
+                    </button>
+                    <button onClick={() => onEdit(project)} className="p-2 text-gray-400 hover:text-orange-500 transition-colors bg-gray-50 dark:bg-gray-900 rounded-xl">
+                      <Edit size={18} />
                     </button>
                      <button 
-                        onClick={(e) => handleDeleteProject(e, project.id, project.name)} 
-                        className="text-gray-500 dark:text-gray-400 hover:text-red-500 transition-colors" 
-                        title="Excluir"
-                        type="button"
+                        onClick={(e) => {
+                            e.preventDefault();
+                            if (window.confirm(`Excluir "${project.name}"?`)) onDelete(project.id);
+                        }} 
+                        className="p-2 text-gray-400 hover:text-red-500 transition-colors bg-gray-50 dark:bg-gray-900 rounded-xl"
                      >
-                      <Trash2 size={20} />
+                      <Trash2 size={18} />
                     </button>
                   </div>
-                </li>
+                </div>
             );
           })}
-        </ul>
+        </div>
       )}
-       <div className="mt-8 border-t border-red-500/30 pt-4">
+
+       {/* Botão de Excluir Tudo */}
+       <div className="pt-6">
             <button
-                onClick={handleDeleteAllClick}
-                className="w-full mt-2 px-4 py-2 bg-red-800 text-white rounded-md hover:bg-red-700 transition-colors font-semibold flex items-center justify-center"
+                onClick={() => {
+                    console.log("[DEBUG] Clique no botão Excluir Todos.");
+                    onDeleteAll();
+                }}
+                className="w-full py-4 bg-red-50 dark:bg-red-900/10 text-red-600 dark:text-red-400 rounded-2xl font-bold flex items-center justify-center gap-2 border border-red-100 dark:border-red-900/30 hover:bg-red-100 dark:hover:bg-red-900/20 transition-colors active:scale-95"
             >
-               <ShieldAlert size={18} className="mr-2"/> Excluir Todos os Projetos
+               <ShieldAlert size={18}/> Excluir Todos os Projetos
             </button>
-            <p className="text-xs text-center text-red-500 dark:text-red-400 mt-2">Cuidado: Esta ação é irreversível e removerá todos os projetos da aplicação.</p>
+        </div>
+
+        {/* Seção de Importação Manual */}
+        <div className="bg-gray-100 dark:bg-gray-700/50 p-4 rounded-2xl">
+            <p className="text-[10px] font-black text-gray-400 dark:text-gray-500 uppercase tracking-widest mb-3 text-center">Importação Manual de Arquivo</p>
+            <input type="file" ref={fileInputRef} onChange={handleFileChange} className="hidden" accept=".xlsx, .xls, .csv" />
+            <button
+                onClick={() => fileInputRef.current?.click()}
+                className="w-full px-4 py-2 bg-white dark:bg-gray-800 text-gray-600 dark:text-gray-300 rounded-xl border border-gray-200 dark:border-gray-600 text-xs font-bold flex items-center justify-center hover:bg-gray-50 transition-colors"
+            >
+                <Upload size={14} className="mr-2"/> Selecionar Planilha Excel/CSV
+            </button>
         </div>
     </div>
   );

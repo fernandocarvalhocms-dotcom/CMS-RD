@@ -1,8 +1,9 @@
+
 import React from 'react';
 import type { View } from '../types';
 
 // Icons from lucide-react (npm install lucide-react)
-import { Clock, Briefcase, BarChart2, Settings } from 'lucide-react';
+import { Clock, Briefcase, BarChart2, Settings, HelpCircle } from 'lucide-react';
 
 interface BottomNavProps {
   activeView: View;
@@ -31,8 +32,14 @@ const BottomNav: React.FC<BottomNavProps> = ({ activeView, setActiveView }) => {
   return (
     <div className="fixed bottom-0 left-0 right-0 h-16 bg-white dark:bg-gray-900 border-t border-gray-200 dark:border-gray-700 flex justify-around shadow-lg z-40">
       <NavItem 
+        icon={HelpCircle} 
+        label="Início" 
+        isActive={activeView === 'instructions'} 
+        onClick={() => setActiveView('instructions')} 
+      />
+      <NavItem 
         icon={Clock} 
-        label="Apontamentos" 
+        label="Apontar" 
         isActive={activeView === 'timesheet'} 
         onClick={() => setActiveView('timesheet')} 
       />

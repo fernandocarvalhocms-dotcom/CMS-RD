@@ -132,6 +132,7 @@ export const saveProject = async (userId: string, project: Project): Promise<boo
 
 export const bulkSaveProjects = async (userId: string, projectsToSave: Project[]): Promise<boolean> => {
     try {
+        console.log(`[DATA] Iniciando bulkSave de ${projectsToSave.length} projetos para o usuário ${userId}`);
         const payload = projectsToSave.map(p => ({
             id: p.id,
             user_id: userId,
@@ -143,7 +144,11 @@ export const bulkSaveProjects = async (userId: string, projectsToSave: Project[]
         }));
 
         const { error } = await supabase.from('projects').upsert(payload);
-        if (error) throw error;
+        if (error) {
+            console.error("[DATA] Erro no Supabase bulkSaveProjects:", error);
+            throw error;
+        }
+        console.log("[DATA] bulkSaveProjects concluído com sucesso.");
         return true;
     } catch (err) {
         logError('bulkSaveProjects', err);
@@ -164,8 +169,15 @@ export const deleteProject = async (projectId: string): Promise<boolean> => {
 
 export const deleteAllProjects = async (userId: string): Promise<boolean> => {
     try {
-         const { error } = await supabase.from('projects').delete().eq('user_id', userId);
-         if (error) throw error;
+         console.log(`[DATA] Excluindo todos os projetos para user_id: ${userId}`);
+         const { data, error, status } = await supabase.from('projects').delete().eq('user_id', userId);
+         
+         if (error) {
+             console.error("[DATA] Erro ao deletar todos os projetos:", error);
+             throw error;
+         }
+         
+         console.log(`[DATA] Status servidor: ${status}. Projetos excluídos.`);
          return true;
     } catch(e) {
         logError('deleteAllProjects', e);
@@ -199,8 +211,6 @@ export const fetchAllocations = async (userId: string): Promise<AllAllocations> 
 
 export const saveAllocation = async (userId: string, date: string, entry: DailyEntry): Promise<boolean> => {
   try {
-      // Nota importante para o banco: Certifique-se de que a coluna 'project_id' foi removida.
-      // O Upsert usa a restrição UNIQUE(user_id, work_date).
       const { error } = await supabase
         .from('allocations')
         .upsert({
@@ -233,6 +243,25 @@ export const deleteAllocation = async (userId: string, date: string): Promise<bo
   }
 };
 
+export const deleteAllocationsInRange = async (userId: string, startDate: string, endDate: string): Promise<boolean> => {
+    try {
+        console.log(`[DATA] Excluindo alocações entre ${startDate} e ${endDate} para user ${userId}`);
+        const { error } = await supabase
+            .from('allocations')
+            .delete()
+            .eq('user_id', userId)
+            .gte('work_date', startDate)
+            .lte('work_date', endDate);
+        
+        if (error) throw error;
+        console.log("[DATA] Alocações excluídas.");
+        return true;
+    } catch (e) {
+        logError('deleteAllocationsInRange', e);
+        return false;
+    }
+};
+
 export const clearAllocationsForProject = async (userId: string, projectId: string, currentAllocations: AllAllocations): Promise<void> => {
     try {
         const entriesToUpdate = Object.entries(currentAllocations).filter(([_, entry]) => 
@@ -259,34 +288,30 @@ export const clearAllocationsForProject = async (userId: string, projectId: stri
 // CONFIGURAÇÕES
 // ==========================================
 
-export const fetchSettings = async (userId: string): Promise<{ theme: 'light' | 'dark', email: string }> => {
+export const fetchSettings = async (userId: string): Promise<{ theme: 'light' | 'dark' }> => {
     try {
         const { data, error } = await supabase
             .from('user_settings')
-            .select('*')
+            .select('theme')
             .eq('user_id', userId)
             .maybeSingle();
             
         if (error) throw error;
         
         if (data) {
-            return { theme: data.theme, email: data.email };
+            return { theme: data.theme };
         }
     } catch(e) {
         logError('fetchSettings', e);
     }
-    return { theme: 'light', email: '' };
+    return { theme: 'light' };
 };
 
-export const saveSettings = async (userId: string, settings: { theme?: 'light' | 'dark', email?: string }): Promise<boolean> => {
+export const saveSettings = async (userId: string, settings: { theme: 'light' | 'dark' }): Promise<boolean> => {
     try {
-        const current = await fetchSettings(userId);
-        const newSettings = { ...current, ...settings };
-        
         const { error } = await supabase.from('user_settings').upsert({
             user_id: userId,
-            theme: newSettings.theme,
-            email: newSettings.email
+            theme: settings.theme
         }, { onConflict: 'user_id' });
         
         if (error) throw error;
