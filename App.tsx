@@ -17,7 +17,7 @@ import ProjectForm from './components/ProjectForm';
 import ProjectList from './components/ProjectList';
 import ReportView from './components/ReportView';
 import DayEntryForm from './components/DayEntryForm';
-import { decimalHoursToHHMM, generateUUID } from './utils/formatters';
+import { decimalHoursToHHMM, generateUUID, generateStableProjectId } from './utils/formatters';
 import LoginScreen from './components/LoginScreen';
 import { 
     fetchProjects, saveProject, deleteProject, deleteAllProjects,
@@ -62,7 +62,6 @@ const MainApp: React.FC<{ user: User; onLogout: () => void }> = ({ user, onLogou
   useEffect(() => {
     const loadData = async () => {
         setIsLoadingData(true);
-        console.log(`[APP] Carregando dados para o usuário: ${user.id}`);
         try {
             const [p, a, s] = await Promise.all([
                 fetchProjects(user.id),
@@ -72,9 +71,8 @@ const MainApp: React.FC<{ user: User; onLogout: () => void }> = ({ user, onLogou
             setProjects(p || []);
             setAllocations(a || {});
             setTheme(s.theme || 'light');
-            console.log(`[APP] Dados carregados: ${p.length} projetos.`);
         } catch (e) {
-            console.error("[APP] Erro ao carregar dados do usuário no Supabase", e);
+            console.error("[APP] Erro ao carregar dados", e);
         } finally {
             setIsLoadingData(false);
         }
@@ -121,30 +119,18 @@ const MainApp: React.FC<{ user: User; onLogout: () => void }> = ({ user, onLogou
   };
 
   const handleDeleteProject = async (projectId: string) => {
-    console.log(`[DELETE] Excluindo projeto: ${projectId}`);
     setProjects(prevProjects => (prevProjects || []).filter(p => p.id !== projectId));
-    const success = await deleteProject(projectId);
-    console.log(`[DELETE] Resultado servidor: ${success}`);
+    await deleteProject(projectId);
     await clearAllocationsForProject(user.id, projectId, allocations);
   };
 
   const handleDeleteAllProjects = async () => {
-    console.log("[DELETE ALL] Iniciando exclusão de todos os projetos.");
     if (window.confirm("Isso excluirá permanentemente TODOS os seus projetos. Continuar?")) {
         setIsLoadingData(true);
         try {
-            console.log(`[DELETE ALL] Chamando serviço para user ${user.id}`);
             const success = await deleteAllProjects(user.id);
-            console.log(`[DELETE ALL] Resultado serviço: ${success}`);
             if (success) {
                 setProjects([]);
-                setAllocations(prev => {
-                    const cleaned: AllAllocations = {};
-                    Object.keys(prev).forEach(key => {
-                        cleaned[key] = { ...prev[key], projectAllocations: [] };
-                    });
-                    return cleaned;
-                });
                 alert("Todos os projetos foram removidos.");
             } else {
                 alert("Erro ao excluir projetos no servidor.");
@@ -172,7 +158,6 @@ const MainApp: React.FC<{ user: User; onLogout: () => void }> = ({ user, onLogou
 
   const handleImportProjects = async (file: File) => {
     if (!file) return;
-    console.log(`[IMPORT] Lendo arquivo: ${file.name}`);
     const reader = new FileReader();
     reader.onload = async (event) => {
       setIsLoadingData(true);
@@ -190,28 +175,28 @@ const MainApp: React.FC<{ user: User; onLogout: () => void }> = ({ user, onLogou
             if (!row || row.length < 4) continue;
             
             const colD = String(row[3] || '').trim();
+            const costCenter = String(row[0] || '').trim() || 'S/C';
+            const client = String(row[2] || '').trim() || 'Geral';
+
             if (colD !== '') {
+                // Se o arquivo tiver UUID na coluna E, usamos ele (casos de exportação prévia)
+                const id = row[4] ? String(row[4]).trim() : generateStableProjectId(colD, costCenter, client, selectedSyncMonth, user.id);
                 importedProjects.push({
-                    id: generateUUID(),
-                    code: String(row[0] || '').trim() || 'S/C',
-                    accountingId: String(row[1] || '').trim() || 'S/ID',
-                    client: String(row[2] || '').trim() || 'Geral',
+                    id,
+                    code: costCenter,
+                    accountingId: `MES-${selectedSyncMonth}`,
+                    client: client,
                     name: colD,
                     status: 'active' as const,
                 });
             }
         }
 
-        console.log(`[IMPORT] Parse completo: ${importedProjects.length} projetos.`);
-
         if (importedProjects.length > 0) {
-             console.log("[IMPORT] Limpando projetos antigos...");
-             await deleteAllProjects(user.id);
              const success = await bulkSaveProjects(user.id, importedProjects);
              if (success) {
                  const updated = await fetchProjects(user.id);
                  setProjects(updated);
-                 console.log(`[IMPORT] Sucesso. ${updated.length} projetos ativos.`);
              } else {
                  alert("Erro ao salvar no banco de dados.");
              }
@@ -219,7 +204,6 @@ const MainApp: React.FC<{ user: User; onLogout: () => void }> = ({ user, onLogou
             alert("Nenhuma operação encontrada.");
         }
       } catch (error: any) { 
-        console.error("[IMPORT ERROR]", error);
         alert(`Falha na importação: ${error.message}`);
       } finally {
         setIsLoadingData(false);
@@ -272,7 +256,6 @@ const MainApp: React.FC<{ user: User; onLogout: () => void }> = ({ user, onLogou
 
   const handleDeleteMonthlyAllocations = async () => {
     const monthName = format(calendarDate, 'MMMM', { locale: ptBR });
-    console.log(`[DELETE MONTH] Limpando mês: ${monthName}`);
     const isConfirmed = window.confirm(`ATENÇÃO: Deseja excluir TODOS os apontamentos de ${monthName}?`);
     if (!isConfirmed) return;
 
@@ -289,7 +272,6 @@ const MainApp: React.FC<{ user: User; onLogout: () => void }> = ({ user, onLogou
                 const updated: AllAllocations = {};
                 Object.keys(prev || {}).forEach(key => {
                     const dateObj = parse(key, 'yyyy-MM-dd', new Date());
-                    // Mantém apenas as datas que NÃO estão dentro do mês excluído
                     if (!isWithinInterval(dateObj, { start, end })) {
                         updated[key] = prev[key];
                     }
@@ -297,12 +279,9 @@ const MainApp: React.FC<{ user: User; onLogout: () => void }> = ({ user, onLogou
                 return updated;
             });
             alert(`Apontamentos de ${monthName} removidos.`);
-        } else {
-            alert("Falha ao excluir no servidor.");
         }
     } catch (e) {
-        console.error("[DELETE MONTH ERROR]", e);
-        alert("Erro ao processar exclusão.");
+        console.error(e);
     } finally {
         setIsLoadingData(false);
     }
@@ -356,7 +335,7 @@ const MainApp: React.FC<{ user: User; onLogout: () => void }> = ({ user, onLogou
 
 
   const renderInstructions = () => (
-    <div className="p-6 max-w-2xl mx-auto space-y-6 pb-24 animate-in fade-in slide-in-from-bottom-4 duration-500">
+    <div className="p-6 max-w-2xl mx-auto space-y-6 pb-24 animate-in fade-in slide-in-from-bottom-4 duration-500 overflow-y-auto max-h-[calc(100vh-140px)]">
       <div className="text-center space-y-2">
         <div className="bg-orange-100 dark:bg-orange-900/30 w-16 h-16 rounded-full flex items-center justify-center mx-auto mb-4">
           <Info className="text-orange-600 dark:text-orange-400" size={32} />
@@ -366,6 +345,7 @@ const MainApp: React.FC<{ user: User; onLogout: () => void }> = ({ user, onLogou
       </div>
 
       <div className="space-y-4">
+        {/* Step 1 */}
         <div className="bg-white dark:bg-gray-800 p-5 rounded-2xl shadow-sm border border-gray-100 dark:border-gray-700 flex gap-4 items-start">
           <div className="bg-orange-600 text-white w-8 h-8 rounded-full flex items-center justify-center flex-shrink-0 font-bold mt-1">1</div>
           <div className="space-y-1">
@@ -377,16 +357,18 @@ const MainApp: React.FC<{ user: User; onLogout: () => void }> = ({ user, onLogou
           </div>
         </div>
 
+        {/* Step 2 */}
         <div className="bg-white dark:bg-gray-800 p-5 rounded-2xl shadow-sm border border-gray-100 dark:border-gray-700 flex gap-4 items-start">
           <div className="bg-orange-600 text-white w-8 h-8 rounded-full flex items-center justify-center flex-shrink-0 font-bold mt-1">2</div>
           <div className="space-y-1">
             <h3 className="font-bold text-gray-900 dark:text-white">Realização dos Apontamentos</h3>
             <p className="text-sm text-gray-600 dark:text-gray-300 leading-relaxed">
-              Ir na aba <strong>Apontamentos</strong>, clicar no dia que deseja preencher, informar a hora de início e término - conforme o turno - adicionar o(s) centro(s) de custos em que está trabalhando e apropriar as horas, ou clicar em <strong>distribuir</strong> para divisão proporcional automática. Ao finalizar, clique em <strong>Salvar o dia</strong>.
+              Ir na aba <strong>Apontamentos</strong>, clicar no dia que deseja preencher, informar a hora de início e término - conforme o turno - adicionar o(s) centro(s) de custos em que está trabalhando e apropriar as horas, ou clicar em distribuir para divisão proporcional automática. Ao finalizar, clique em <strong>Salvar o dia</strong>.
             </p>
           </div>
         </div>
 
+        {/* Step 3 */}
         <div className="bg-white dark:bg-gray-800 p-5 rounded-2xl shadow-sm border border-gray-100 dark:border-gray-700 flex gap-4 items-start">
           <div className="bg-orange-600 text-white w-8 h-8 rounded-full flex items-center justify-center flex-shrink-0 font-bold mt-1">3</div>
           <div className="space-y-1">
@@ -397,6 +379,7 @@ const MainApp: React.FC<{ user: User; onLogout: () => void }> = ({ user, onLogou
           </div>
         </div>
 
+        {/* Step 4 */}
         <div className="bg-white dark:bg-gray-800 p-5 rounded-2xl shadow-sm border border-gray-100 dark:border-gray-700 flex gap-4 items-start">
           <div className="bg-orange-600 text-white w-8 h-8 rounded-full flex items-center justify-center flex-shrink-0 font-bold mt-1">4</div>
           <div className="space-y-1">
@@ -407,12 +390,13 @@ const MainApp: React.FC<{ user: User; onLogout: () => void }> = ({ user, onLogou
           </div>
         </div>
 
+        {/* Step 5 */}
         <div className="bg-white dark:bg-gray-800 p-5 rounded-2xl shadow-sm border border-gray-100 dark:border-gray-700 flex gap-4 items-start">
           <div className="bg-orange-600 text-white w-8 h-8 rounded-full flex items-center justify-center flex-shrink-0 font-bold mt-1">5</div>
           <div className="space-y-1">
             <h3 className="font-bold text-gray-900 dark:text-white">Exportação Final</h3>
             <p className="text-sm text-gray-600 dark:text-gray-300 leading-relaxed">
-              Na aba <strong>Relatórios</strong>, clicar em <strong>exportar para Excel</strong> e conferir o arquivo gerado.
+              Na aba <strong>Relatórios</strong>, clicar em exportar para Excel e conferir o arquivo gerado.
             </p>
           </div>
         </div>
@@ -442,7 +426,7 @@ const MainApp: React.FC<{ user: User; onLogout: () => void }> = ({ user, onLogou
       case 'projects':
         return (
           <div className="p-4">
-            <h1 className="text-2xl font-bold mb-4">Meus Projetos</h1>
+            <h1 className="text-2xl font-bold mb-4">Gerenciar Operações</h1>
             <ProjectList 
               projects={projects} 
               onEdit={handleEditProject} 
@@ -452,6 +436,7 @@ const MainApp: React.FC<{ user: User; onLogout: () => void }> = ({ user, onLogou
               onDeleteAll={handleDeleteAllProjects}
               selectedMonth={selectedSyncMonth}
               setSelectedMonth={setSelectedSyncMonth}
+              userId={user.id}
             />
              <button 
                 onClick={() => { setProjectToEdit(null); setIsProjectFormOpen(true); }}
@@ -481,6 +466,9 @@ const MainApp: React.FC<{ user: User; onLogout: () => void }> = ({ user, onLogou
       case 'timesheet':
       default:
         if (selectedDay) {
+          const dayMonthIdx = selectedDay.getMonth();
+          const dayMonthTag = `MES-${dayMonthIdx}`;
+
           return (
             <div>
               <div className="sticky top-16 bg-white dark:bg-gray-800 z-10 p-4 shadow-md flex items-center justify-between border-b border-gray-200 dark:border-gray-700">
@@ -496,7 +484,8 @@ const MainApp: React.FC<{ user: User; onLogout: () => void }> = ({ user, onLogou
                 onSave={handleSaveDailyEntry}
                 onReplicate={handleReplicateDailyEntry}
                 onDelete={handleDeleteDailyEntry}
-                projects={projects}
+                projects={projects} // SEMPRE PASSAR TODOS OS PROJETOS PARA LOOKUP
+                dayMonthTag={dayMonthTag} // TAG DO MÊS PARA FILTRAR O SELETOR
                 previousEntry={previousEntry}
               />
             </div>
@@ -557,19 +546,19 @@ const MainApp: React.FC<{ user: User; onLogout: () => void }> = ({ user, onLogou
                       const dailyHours = calculateTotalHours(entry);
                       const isFilled = entry && entry.projectAllocations && entry.projectAllocations.length > 0;
                       const isCurrentMonth = isSameMonth(day, calendarDate);
-                      const isCurrentDay = isToday(day);
+                      const isTodayDate = isToday(day);
                       const dayClasses = `
                           relative p-2 rounded-lg aspect-square flex flex-col items-center justify-center transition-all border-2
                           ${!isCurrentMonth ? 'border-transparent opacity-20' : 
                             (isFilled ? 'border-green-500 dark:border-green-400' : 'border-red-300 dark:border-red-800')
                           }
-                          ${isCurrentDay ? 'bg-orange-600 text-white' : 'hover:bg-gray-100 dark:hover:bg-gray-800'}
+                          ${isTodayDate ? 'bg-orange-600 text-white border-orange-600 shadow-md' : 'hover:bg-gray-100 dark:hover:bg-gray-800'}
                       `;
                       return (
                           <button key={day.toString()} onClick={() => setSelectedDay(day)} className={dayClasses}>
                               <span className="text-sm font-semibold mb-1">{format(day, 'd')}</span>
                               {dailyHours > 0 && (
-                                  <span className={`text-[10px] font-bold w-full text-center ${isCurrentDay ? 'text-white' : 'text-gray-600 dark:text-gray-300'}`}>
+                                  <span className={`text-[10px] font-bold w-full text-center ${isTodayDate ? 'text-white' : 'text-gray-600 dark:text-gray-300'}`}>
                                       {decimalHoursToHHMM(dailyHours)}
                                   </span>
                               )}

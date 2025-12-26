@@ -1,5 +1,7 @@
+
 import React, { useState, useEffect } from 'react';
 import type { Project } from '../types';
+import { generateUUID } from '../utils/formatters';
 
 interface ProjectFormProps {
   onSave: (project: Project) => void;
@@ -34,7 +36,7 @@ const ProjectForm: React.FC<ProjectFormProps> = ({ onSave, onCancel, projectToEd
       return;
     }
     onSave({
-      id: projectToEdit ? projectToEdit.id : new Date().toISOString(),
+      id: projectToEdit ? projectToEdit.id : generateUUID(),
       name,
       code,
       client,

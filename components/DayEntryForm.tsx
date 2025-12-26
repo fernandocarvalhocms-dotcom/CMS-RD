@@ -15,6 +15,7 @@ interface DayEntryFormProps {
   onReplicate?: (entry: DailyEntry, daysCount: Date[]) => void;
   onDelete: () => void;
   projects: Project[];
+  dayMonthTag?: string;
   previousEntry: DailyEntry | null;
 }
 
@@ -40,7 +41,7 @@ const getProjectDisplay = (project: Project | undefined) => {
     };
 };
 
-const DayEntryForm: React.FC<DayEntryFormProps> = ({ initialEntry, onSave, onReplicate, onDelete, projects, previousEntry }) => {
+const DayEntryForm: React.FC<DayEntryFormProps> = ({ initialEntry, onSave, onReplicate, onDelete, projects, dayMonthTag, previousEntry }) => {
   const [shifts, setShifts] = useState<{
     morning: TimeShift;
     afternoon: TimeShift;
@@ -66,6 +67,7 @@ const DayEntryForm: React.FC<DayEntryFormProps> = ({ initialEntry, onSave, onRep
   const [replicationMonth, setReplicationMonth] = useState(new Date());
   const [selectedReplicationDates, setSelectedReplicationDates] = useState<Date[]>([]);
 
+  // Lookup global para exibição correta de todos os projetos cadastrados
   const projectsById = useMemo(() => {
     return projects.reduce((acc, p) => {
       acc[p.id] = p;
@@ -73,6 +75,12 @@ const DayEntryForm: React.FC<DayEntryFormProps> = ({ initialEntry, onSave, onRep
     }, {} as Record<string, Project>);
   }, [projects]);
 
+  // Lista para o seletor de "Adicionar" (prioriza o mês atual para limpeza visual)
+  const selectorProjects = useMemo(() => {
+    if (!dayMonthTag) return projects;
+    const currentMonthOnly = projects.filter(p => p.accountingId === dayMonthTag);
+    return currentMonthOnly.length > 0 ? currentMonthOnly : projects;
+  }, [projects, dayMonthTag]);
 
   const calculateTotalHours = useCallback((currentShifts: typeof shifts) => {
     let totalMinutes = 0;
@@ -219,12 +227,12 @@ const DayEntryForm: React.FC<DayEntryFormProps> = ({ initialEntry, onSave, onRep
 
   const filteredDistProjects = useMemo(() => {
       const lower = distSearchTerm.toLowerCase();
-      return projects.filter(p => p.status === 'active' && (
+      return selectorProjects.filter(p => p.status === 'active' && (
           p.name.toLowerCase().includes(lower) || 
           p.client.toLowerCase().includes(lower) ||
           p.code.toLowerCase().includes(lower)
       ));
-  }, [projects, distSearchTerm]);
+  }, [selectorProjects, distSearchTerm]);
 
 
   const getReplicationCalendarDays = () => {
@@ -383,7 +391,7 @@ const DayEntryForm: React.FC<DayEntryFormProps> = ({ initialEntry, onSave, onRep
       <ClientProjectSelector 
         isOpen={isProjectSelectorOpen}
         onClose={() => setIsProjectSelectorOpen(false)}
-        projects={projects}
+        projects={selectorProjects}
         onSelectProject={handleAddProject}
         allocatedProjectIds={projectAllocations.map(p => p.projectId)}
       />

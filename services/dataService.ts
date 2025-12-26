@@ -8,6 +8,8 @@ const logError = (context: string, error: any) => {
     console.error(`[Supabase Error] ${context}:`, msg);
 };
 
+const uuidRegex = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
+
 // ==========================================
 // USUÁRIOS
 // ==========================================
@@ -116,7 +118,6 @@ export const saveProject = async (userId: string, project: Project): Promise<boo
         status: project.status
       };
 
-      const uuidRegex = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
       if (uuidRegex.test(project.id)) {
           payload.id = project.id;
       }
@@ -133,15 +134,24 @@ export const saveProject = async (userId: string, project: Project): Promise<boo
 export const bulkSaveProjects = async (userId: string, projectsToSave: Project[]): Promise<boolean> => {
     try {
         console.log(`[DATA] Iniciando bulkSave de ${projectsToSave.length} projetos para o usuário ${userId}`);
-        const payload = projectsToSave.map(p => ({
-            id: p.id,
-            user_id: userId,
-            name: p.name,
-            cost_center: p.code,
-            client: p.client,
-            id_contabil: p.accountingId,
-            status: 'active'
-        }));
+        
+        // Filtramos apenas os projetos com IDs válidos para evitar erro de sintaxe UUID no Postgres
+        const payload = projectsToSave
+            .filter(p => uuidRegex.test(p.id))
+            .map(p => ({
+                id: p.id,
+                user_id: userId,
+                name: p.name,
+                cost_center: p.code,
+                client: p.client,
+                id_contabil: p.accountingId,
+                status: 'active'
+            }));
+
+        if (payload.length === 0) {
+            console.warn("[DATA] Nenhum projeto com ID válido para salvar.");
+            return true;
+        }
 
         const { error } = await supabase.from('projects').upsert(payload);
         if (error) {
