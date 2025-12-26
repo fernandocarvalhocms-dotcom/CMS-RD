@@ -1,5 +1,5 @@
 
-import React, { useState, useRef } from 'react';
+import React, { useState, useRef, useMemo } from 'react';
 import type { Project } from '../types';
 import { read, utils } from 'xlsx';
 
@@ -38,7 +38,7 @@ const MONTH_GIDS: Record<number, string> = {
   7: '2038419421', // AGOSTO
   8: '1466302051', // SETEMBRO
   9: '1346291219', // OUTUBRO
-  10: '186717551', // NOVEMBRO (Corrigido para o valor real da aba)
+  10: '186717551', // NOVEMBRO
   11: '1138224182' // DEZEMBRO
 };
 
@@ -77,13 +77,21 @@ const ProjectList: React.FC<ProjectListProps> = ({
   
   const fileInputRef = useRef<HTMLInputElement>(null);
 
-  // Filtramos os projetos para exibir apenas os do mês selecionado
+  // Filtramos e ORDENAMOS os projetos alfabeticamente
   const monthTag = `MES-${selectedMonth}`;
-  const filteredProjects = projects.filter(p => {
-    const isCorrectMonth = p.accountingId === monthTag;
-    const isCorrectStatus = showInactive ? p.status === 'inactive' : p.status === 'active';
-    return isCorrectMonth && isCorrectStatus;
-  });
+  const filteredProjects = useMemo(() => {
+    return projects
+      .filter(p => {
+        const isCorrectMonth = p.accountingId === monthTag;
+        const isCorrectStatus = showInactive ? p.status === 'inactive' : p.status === 'active';
+        return isCorrectMonth && isCorrectStatus;
+      })
+      .sort((a, b) => {
+        const titleA = getProjectDisplay(a).title.toLowerCase();
+        const titleB = getProjectDisplay(b).title.toLowerCase();
+        return titleA.localeCompare(titleB, 'pt-BR');
+      });
+  }, [projects, monthTag, showInactive]);
 
   const activeProjectsInMonth = projects.filter(p => p.accountingId === monthTag && p.status === 'active').length;
 
@@ -127,11 +135,12 @@ const ProjectList: React.FC<ProjectListProps> = ({
           const client = String(row[2] || '').trim() || 'Geral';
           
           if (projectName !== '') {
-              const stableId = generateStableProjectId(projectName, costCenter, client, selectedMonth, userId);
+              // Removido o 'selectedMonth' do ID para estabilidade total
+              const stableId = generateStableProjectId(projectName, costCenter, client, userId);
               importedProjects.push({
                   id: stableId,
                   code: costCenter,
-                  accountingId: monthTag, // Tagueamos com o mês para preservação e filtro
+                  accountingId: monthTag,
                   client: client,
                   name: projectName,
                   status: 'active' as const,

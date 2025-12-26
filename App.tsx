@@ -179,8 +179,8 @@ const MainApp: React.FC<{ user: User; onLogout: () => void }> = ({ user, onLogou
             const client = String(row[2] || '').trim() || 'Geral';
 
             if (colD !== '') {
-                // Se o arquivo tiver UUID na coluna E, usamos ele (casos de exportação prévia)
-                const id = row[4] ? String(row[4]).trim() : generateStableProjectId(colD, costCenter, client, selectedSyncMonth, user.id);
+                // Removido o mês do ID para garantir que o projeto seja sempre o mesmo
+                const id = row[4] ? String(row[4]).trim() : generateStableProjectId(colD, costCenter, client, user.id);
                 importedProjects.push({
                     id,
                     code: costCenter,
@@ -345,7 +345,7 @@ const MainApp: React.FC<{ user: User; onLogout: () => void }> = ({ user, onLogou
       </div>
 
       <div className="space-y-4">
-        {/* Step 1 */}
+        {/* Steps... */}
         <div className="bg-white dark:bg-gray-800 p-5 rounded-2xl shadow-sm border border-gray-100 dark:border-gray-700 flex gap-4 items-start">
           <div className="bg-orange-600 text-white w-8 h-8 rounded-full flex items-center justify-center flex-shrink-0 font-bold mt-1">1</div>
           <div className="space-y-1">
@@ -356,8 +356,7 @@ const MainApp: React.FC<{ user: User; onLogout: () => void }> = ({ user, onLogou
             </p>
           </div>
         </div>
-
-        {/* Step 2 */}
+        {/* ... remaining steps ... */}
         <div className="bg-white dark:bg-gray-800 p-5 rounded-2xl shadow-sm border border-gray-100 dark:border-gray-700 flex gap-4 items-start">
           <div className="bg-orange-600 text-white w-8 h-8 rounded-full flex items-center justify-center flex-shrink-0 font-bold mt-1">2</div>
           <div className="space-y-1">
@@ -367,8 +366,6 @@ const MainApp: React.FC<{ user: User; onLogout: () => void }> = ({ user, onLogou
             </p>
           </div>
         </div>
-
-        {/* Step 3 */}
         <div className="bg-white dark:bg-gray-800 p-5 rounded-2xl shadow-sm border border-gray-100 dark:border-gray-700 flex gap-4 items-start">
           <div className="bg-orange-600 text-white w-8 h-8 rounded-full flex items-center justify-center flex-shrink-0 font-bold mt-1">3</div>
           <div className="space-y-1">
@@ -378,8 +375,6 @@ const MainApp: React.FC<{ user: User; onLogout: () => void }> = ({ user, onLogou
             </p>
           </div>
         </div>
-
-        {/* Step 4 */}
         <div className="bg-white dark:bg-gray-800 p-5 rounded-2xl shadow-sm border border-gray-100 dark:border-gray-700 flex gap-4 items-start">
           <div className="bg-orange-600 text-white w-8 h-8 rounded-full flex items-center justify-center flex-shrink-0 font-bold mt-1">4</div>
           <div className="space-y-1">
@@ -389,8 +384,6 @@ const MainApp: React.FC<{ user: User; onLogout: () => void }> = ({ user, onLogou
             </p>
           </div>
         </div>
-
-        {/* Step 5 */}
         <div className="bg-white dark:bg-gray-800 p-5 rounded-2xl shadow-sm border border-gray-100 dark:border-gray-700 flex gap-4 items-start">
           <div className="bg-orange-600 text-white w-8 h-8 rounded-full flex items-center justify-center flex-shrink-0 font-bold mt-1">5</div>
           <div className="space-y-1">
@@ -446,7 +439,7 @@ const MainApp: React.FC<{ user: User; onLogout: () => void }> = ({ user, onLogou
              </button>
           </div>
         );
-      case 'reports': return <ReportView projects={projects} allocations={allocations} theme={theme} userName={user.name} />;
+      case 'reports': return <ReportView projects={projects} allocations={allocations} theme={theme} userName={user.name} userId={user.id} />;
       case 'settings':
         return (
           <div className="p-4 space-y-6">
@@ -484,9 +477,10 @@ const MainApp: React.FC<{ user: User; onLogout: () => void }> = ({ user, onLogou
                 onSave={handleSaveDailyEntry}
                 onReplicate={handleReplicateDailyEntry}
                 onDelete={handleDeleteDailyEntry}
-                projects={projects} // SEMPRE PASSAR TODOS OS PROJETOS PARA LOOKUP
-                dayMonthTag={dayMonthTag} // TAG DO MÊS PARA FILTRAR O SELETOR
+                projects={projects}
+                dayMonthTag={dayMonthTag}
                 previousEntry={previousEntry}
+                userId={user.id}
               />
             </div>
           );

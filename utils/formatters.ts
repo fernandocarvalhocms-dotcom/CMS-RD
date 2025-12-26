@@ -1,41 +1,10 @@
 
 // utils/formatters.ts
-export const decimalHoursToHHMM = (decimalHours: number): string => {
-  if (isNaN(decimalHours) || decimalHours < 0) {
-    return '00:00';
-  }
-
-  // Use total minutes to avoid floating point issues with Math.round
-  const totalMinutes = Math.round(decimalHours * 60);
-  const hours = Math.floor(totalMinutes / 60);
-  const minutes = totalMinutes % 60;
-  
-  const paddedHours = String(hours).padStart(2, '0');
-  const paddedMinutes = String(minutes).padStart(2, '0');
-
-  return `${paddedHours}:${paddedMinutes}`;
-};
-
-export const hhmmToDecimalHours = (hhmm: string): number => {
-  if (!hhmm || !/^\d{1,2}:\d{2}$/.test(hhmm)) {
-    return 0;
-  }
-  const [hours, minutes] = hhmm.split(':').map(Number);
-  if (isNaN(hours) || isNaN(minutes)) {
-      return 0;
-  }
-  return hours + (minutes / 60);
-};
 
 /**
- * Gera um UUID v4 determinístico baseado nos metadados do projeto.
- * Essencial para o Supabase (PostgreSQL) que exige o tipo UUID,
- * mantendo a capacidade de identificar o mesmo projeto em sincronizações futuras (UPSERT).
+ * Função interna para gerar o hash UUID a partir de uma string bruta.
  */
-export const generateStableProjectId = (name: string, cc: string, client: string, month: number, userId: string): string => {
-  const raw = `${name}|${cc}|${client}|${month}|${userId}`.toLowerCase().replace(/\s+/g, '');
-  
-  // Função de hash simples para gerar 4 inteiros de 32 bits
+const hashToUUID = (raw: string): string => {
   const getHash = (str: string, seed: number) => {
     let h = seed;
     for (let i = 0; i < str.length; i++) {
@@ -56,15 +25,44 @@ export const generateStableProjectId = (name: string, cc: string, client: string
   const s3 = toHex(h3);
   const s4 = toHex(h4);
 
-  // Formato UUID: 8-4-4-4-12
-  // M (versão) = 4, N (variante) = 8
   return `${s1}-${s2.substring(0, 4)}-4${s2.substring(4, 7)}-8${s3.substring(0, 3)}-${s3.substring(3, 8)}${s4.substring(0, 7)}`;
 };
 
-export const generateUUID = () => {
-  if (typeof crypto !== 'undefined' && crypto.randomUUID) {
-    return crypto.randomUUID();
+export const decimalHoursToHHMM = (decimalHours: number): string => {
+  if (isNaN(decimalHours) || decimalHours < 0) {
+    return '00:00';
   }
+  const totalMinutes = Math.round(decimalHours * 60);
+  const hours = Math.floor(totalMinutes / 60);
+  const minutes = totalMinutes % 60;
+  return `${String(hours).padStart(2, '0')}:${String(minutes).padStart(2, '0')}`;
+};
+
+export const hhmmToDecimalHours = (hhmm: string): number => {
+  if (!hhmm || !/^\d{1,2}:\d{2}$/.test(hhmm)) return 0;
+  const [hours, minutes] = hhmm.split(':').map(Number);
+  return isNaN(hours) || isNaN(minutes) ? 0 : hours + (minutes / 60);
+};
+
+/**
+ * Gera um ID estável baseado apenas nos dados do projeto e no usuário.
+ * Removido o 'month' para evitar IDs diferentes para o mesmo projeto em meses distintos.
+ */
+export const generateStableProjectId = (name: string, cc: string, client: string, userId: string): string => {
+  const raw = `${name}|${cc}|${client}|${userId}`.toLowerCase().replace(/\s+/g, '');
+  return hashToUUID(raw);
+};
+
+/**
+ * Auxiliar para reconstruir IDs legados (que continham o mês) para fins de recuperação de dados.
+ */
+export const generateLegacyProjectId = (name: string, cc: string, client: string, month: number, userId: string): string => {
+  const raw = `${name}|${cc}|${client}|${month}|${userId}`.toLowerCase().replace(/\s+/g, '');
+  return hashToUUID(raw);
+};
+
+export const generateUUID = () => {
+  if (typeof crypto !== 'undefined' && crypto.randomUUID) return crypto.randomUUID();
   return 'xxxxxxxx-xxxx-4xxx-yxxx-xxxxxxxxxxxx'.replace(/[xy]/g, function(c) {
     var r = Math.random() * 16 | 0, v = c == 'x' ? r : (r & 0x3 | 0x8);
     return v.toString(16);
