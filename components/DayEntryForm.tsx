@@ -1,3 +1,4 @@
+
 import React, { useState, useMemo, useCallback } from 'react';
 import type { DailyEntry, Project, ProjectTimeAllocation, TimeShift } from '../types';
 import { Plus, Trash2, Mic, Copy, Calculator, FastForward, CheckSquare, Square, Eraser } from 'lucide-react';
@@ -61,7 +62,6 @@ const DayEntryForm: React.FC<DayEntryFormProps> = ({ initialEntry, onSave, onRep
   const [selectedProjectsForDist, setSelectedProjectsForDist] = useState<string[]>([]);
   const [distSearchTerm, setDistSearchTerm] = useState('');
 
-  // Replicate Calendar Logic
   const [isReplicateModalOpen, setIsReplicateModalOpen] = useState(false);
   const [replicationMonth, setReplicationMonth] = useState(new Date());
   const [selectedReplicationDates, setSelectedReplicationDates] = useState<Date[]>([]);
@@ -152,11 +152,8 @@ const DayEntryForm: React.FC<DayEntryFormProps> = ({ initialEntry, onSave, onRep
       }
   };
 
-  // --- HANDLERS SIMPLIFICADOS ---
-
   const handleClearDay = (e: React.MouseEvent) => {
     e.preventDefault();
-    // Apenas zera os estados, sem perguntas.
     setShifts({
         morning: { start: '', end: '' },
         afternoon: { start: '', end: '' },
@@ -165,9 +162,13 @@ const DayEntryForm: React.FC<DayEntryFormProps> = ({ initialEntry, onSave, onRep
     setProjectAllocations([]);
   };
 
-  // --- FIM HANDLERS SIMPLIFICADOS ---
+  const handleDeleteEntry = (e: React.MouseEvent) => {
+      e.preventDefault();
+      if (window.confirm("Deseja excluir permanentemente este apontamento?")) {
+          onDelete();
+      }
+  };
 
-  // --- Distribution Logic ---
   const toggleProjectSelection = (projectId: string) => {
       setSelectedProjectsForDist(prev => 
           prev.includes(projectId) 
@@ -191,10 +192,9 @@ const DayEntryForm: React.FC<DayEntryFormProps> = ({ initialEntry, onSave, onRep
 
       setProjectAllocations(newAllocations);
       setIsDistributeModalOpen(false);
-      setSelectedProjectsForDist([]); // Reset
+      setSelectedProjectsForDist([]); 
   };
 
-  // --- Replicate Logic with Calendar ---
   const toggleReplicationDate = (day: Date) => {
       setSelectedReplicationDates(prev => {
           const exists = prev.some(d => isSameDay(d, day));
@@ -302,11 +302,9 @@ const DayEntryForm: React.FC<DayEntryFormProps> = ({ initialEntry, onSave, onRep
                   return (
                     <div key={index} className="flex items-center gap-3 bg-white dark:bg-gray-800 border border-gray-200 dark:border-gray-600 p-3 rounded-md shadow-sm">
                         <div className="flex-1 min-w-0">
-                            {/* Título Principal Grande */}
                             <p className="text-xl font-bold text-gray-900 dark:text-white leading-tight truncate">
                                 {display.title}
                             </p>
-                            {/* Subtítulo Pequeno */}
                             <p className="text-xs text-gray-500 dark:text-gray-400 truncate mt-1">
                                 {display.subtitle}
                             </p>
@@ -336,20 +334,28 @@ const DayEntryForm: React.FC<DayEntryFormProps> = ({ initialEntry, onSave, onRep
           </div>
         </div>
         
-        <div className="flex flex-col gap-4">
-            {/* Opção de Excluir removida conforme solicitado */}
-            
-            <button 
-                type="button"
-                onClick={handleClearDay} 
-                className="w-full px-4 py-3 bg-gray-500 text-white rounded-md font-semibold transition-colors hover:bg-gray-600 flex items-center justify-center gap-2"
-            >
-                <Eraser size={18} />
-                Limpar Tela
-            </button>
+        <div className="flex flex-col gap-4 pb-12">
+            <div className="flex gap-2">
+                <button 
+                    type="button"
+                    onClick={handleClearDay} 
+                    className="flex-1 px-4 py-3 bg-gray-500 text-white rounded-md font-semibold transition-colors hover:bg-gray-600 flex items-center justify-center gap-2"
+                >
+                    <Eraser size={18} />
+                    Limpar Tela
+                </button>
+                
+                <button 
+                    type="button"
+                    onClick={handleDeleteEntry} 
+                    className="flex-1 px-4 py-3 bg-red-600 text-white rounded-md font-semibold transition-colors hover:bg-red-700 flex items-center justify-center gap-2"
+                >
+                    <Trash2 size={18} />
+                    Excluir Apontamento
+                </button>
+            </div>
             
             <div className="flex gap-2">
-                 {/* Botão Replicar */}
                 {onReplicate && hoursMatch && totalWorkedHours > 0 && (
                     <button
                         type="button"
@@ -389,7 +395,6 @@ const DayEntryForm: React.FC<DayEntryFormProps> = ({ initialEntry, onSave, onRep
         onComplete={handleVoiceData}
       />
 
-      {/* Modal Distribuir Horas */}
       <Modal isOpen={isDistributeModalOpen} onClose={() => setIsDistributeModalOpen(false)} title="Distribuir Horas Automaticamente">
           <div className="flex flex-col h-[60vh]">
               <div className="mb-4">
@@ -442,7 +447,6 @@ const DayEntryForm: React.FC<DayEntryFormProps> = ({ initialEntry, onSave, onRep
           </div>
       </Modal>
 
-      {/* Modal Replicar - NOVO CALENDÁRIO */}
       <Modal isOpen={isReplicateModalOpen} onClose={() => setIsReplicateModalOpen(false)} title="Selecione os dias para replicar">
           <div className="p-4 flex flex-col h-[70vh]">
               <div className="flex justify-between items-center mb-4">

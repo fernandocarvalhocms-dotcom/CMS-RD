@@ -1,3 +1,4 @@
+
 import React, { useState, useMemo, useEffect } from 'react';
 import { startOfMonth, endOfMonth, format, subMonths, addMonths, eachDayOfInterval } from 'date-fns';
 import { ptBR } from 'date-fns/locale';
@@ -16,20 +17,18 @@ interface ReportViewProps {
   userName?: string;
 }
 
-// Cores: Degradê de Laranja forte para Laranja suave, finalizando em Cinza Claro
 const COLORS = [
-  '#c2410c', // Orange 700 (Mais escuro/Forte)
+  '#c2410c', // Orange 700
   '#ea580c', // Orange 600
   '#f97316', // Orange 500
   '#fb923c', // Orange 400
   '#fdba74', // Orange 300
   '#6b7280', // Gray 500
   '#9ca3af', // Gray 400
-  '#cbd5e1', // Slate 300 (Cinza azulado claro)
+  '#cbd5e1', // Slate 300
   '#d1d5db'  // Gray 300
 ];
 
-// Helper para exibição inteligente na TABELA (mantém lógica de código se necessário)
 const getProjectDisplay = (project: Project | undefined) => {
     if (!project) return { title: 'Projeto Desconhecido', subtitle: '' };
 
@@ -50,8 +49,6 @@ const getProjectDisplay = (project: Project | undefined) => {
 
 const ReportView: React.FC<ReportViewProps> = ({ projects, allocations, theme, userName }) => {
   const [date, setDate] = useState(new Date());
-  
-  // Estado para controlar responsividade via JS (necessário para props do Recharts)
   const [windowWidth, setWindowWidth] = useState(window.innerWidth);
 
   useEffect(() => {
@@ -73,7 +70,6 @@ const ReportView: React.FC<ReportViewProps> = ({ projects, allocations, theme, u
   }, [date]);
 
   const matrixData = useMemo(() => {
-    // 1. Identificar quais projetos têm horas neste mês
     const relevantProjectIds = new Set<string>();
     
     daysInMonth.forEach(day => {
@@ -86,7 +82,6 @@ const ReportView: React.FC<ReportViewProps> = ({ projects, allocations, theme, u
         }
     });
 
-    // 2. Construir linhas da matriz
     const rows = Array.from(relevantProjectIds).map(projectId => {
         const project = projects.find(p => p.id === projectId);
         const display = getProjectDisplay(project);
@@ -102,14 +97,13 @@ const ReportView: React.FC<ReportViewProps> = ({ projects, allocations, theme, u
 
         return {
             projectId,
-            project, // Guardamos o objeto projeto para uso nos gráficos
+            project,
             display,
             dailyHours,
             totalHours
         };
     }).sort((a, b) => b.totalHours - a.totalHours);
 
-    // 3. Totais por dia (coluna)
     const dailyTotals = daysInMonth.map((day, idx) => {
         return rows.reduce((acc, row) => acc + row.dailyHours[idx], 0);
     });
@@ -121,34 +115,28 @@ const ReportView: React.FC<ReportViewProps> = ({ projects, allocations, theme, u
   }, [daysInMonth, allocations, projects]);
 
   const chartData = useMemo(() => {
-    const clientMap: Record<string, number> = {};
-    const projectList: { name: string, hours: number, client: string }[] = [];
+    const projectMap: Record<string, number> = {};
 
     matrixData.rows.forEach(row => {
-        // Dados por Cliente
-        const clientName = row.project?.client || 'Desconhecido';
-        clientMap[clientName] = (clientMap[clientName] || 0) + row.totalHours;
-
-        // Dados por Projeto (Ranking)
         const projectName = row.display.title; 
-
-        projectList.push({
-            name: projectName,
-            hours: row.totalHours,
-            client: clientName
-        });
+        projectMap[projectName] = (projectMap[projectName] || 0) + row.totalHours;
     });
 
-    const clientData = Object.entries(clientMap)
+    const projectData = Object.entries(projectMap)
         .map(([name, value]) => ({ name, value }))
         .sort((a, b) => b.value - a.value);
 
-    // TOP 5 Projetos (Limitado para caber na tela sem scroll)
-    const topProjects = projectList
-        .sort((a, b) => b.hours - a.hours)
-        .slice(0, 5);
+    // Para o gráfico de pizza, mostramos os TOP 7 e agrupamos o resto em "Outros"
+    const pieData = projectData.slice(0, 7);
+    if (projectData.length > 7) {
+        const othersValue = projectData.slice(7).reduce((acc, curr) => acc + curr.value, 0);
+        pieData.push({ name: 'Outros', value: othersValue });
+    }
 
-    return { clientData, topProjects };
+    // TOP 5 Projetos para o Ranking de Barras
+    const topProjects = projectData.slice(0, 5);
+
+    return { pieData, topProjects };
   }, [matrixData]);
 
   const periodLabel = format(date, "MMMM 'de' yyyy", { locale: ptBR });
@@ -180,9 +168,7 @@ const ReportView: React.FC<ReportViewProps> = ({ projects, allocations, theme, u
   };
 
   return (
-    // Aumentado pb-40 para pb-72 para garantir MUITO espaço extra no final da página
     <div className="p-4 space-y-4 flex flex-col h-full pb-72">
-      {/* Header de Controle de Data */}
       <div className="bg-gray-100 dark:bg-gray-700 p-2 rounded-md space-y-3">
           <div className="flex justify-between items-center">
             <button onClick={handlePrev} className="px-3 py-1 bg-gray-200 dark:bg-gray-600 rounded hover:bg-gray-300 dark:hover:bg-gray-500">&lt;</button>
@@ -193,7 +179,6 @@ const ReportView: React.FC<ReportViewProps> = ({ projects, allocations, theme, u
 
       {matrixData.rows.length > 0 ? (
         <div className="flex flex-col space-y-8">
-            {/* SEÇÃO DA TABELA */}
              <div className="bg-white dark:bg-gray-800 rounded-lg shadow overflow-hidden border border-gray-200 dark:border-gray-700">
                 <div className="overflow-x-auto">
                     <table className="w-full text-xs text-left border-collapse">
@@ -234,7 +219,6 @@ const ReportView: React.FC<ReportViewProps> = ({ projects, allocations, theme, u
                                     ))}
                                 </tr>
                             ))}
-                            {/* Linha de Totais Gerais */}
                             <tr className="bg-gray-100 dark:bg-gray-700 font-bold border-t-2 border-gray-300 dark:border-gray-500">
                                 <td className="p-2 sticky left-0 bg-gray-100 dark:bg-gray-700 z-10 text-right pr-4 shadow-[2px_0_5px_-2px_rgba(0,0,0,0.1)]">
                                     TOTAL GERAL
@@ -260,23 +244,17 @@ const ReportView: React.FC<ReportViewProps> = ({ projects, allocations, theme, u
                 Exportar para Excel (.xlsx)
             </button>
 
-            {/* SEÇÃO DOS GRÁFICOS */}
-            {/* Aumentado mb-10 para mb-24 */}
             <div className="grid grid-cols-1 lg:grid-cols-2 gap-6 mb-24">
-                {/* Gráfico de Pizza - Horas por Operação */}
                 <div className="bg-white dark:bg-gray-800 p-4 rounded-lg shadow border border-gray-200 dark:border-gray-700">
                     <h3 className="text-center font-bold text-gray-700 dark:text-gray-200 mb-4">Horas por Operação</h3>
-                    {/* Altura reduzida para 250px no mobile para ganhar espaço */}
-                    <div className="h-[250px] md:h-[450px] w-full"> 
+                    <div className="h-[300px] md:h-[450px] w-full"> 
                         <ResponsiveContainer width="100%" height="100%">
                             <PieChart>
                                 <Pie
-                                    data={chartData.clientData}
-                                    // No mobile, centraliza (50%). No desktop, joga para esquerda (40%) para caber a legenda lateral.
+                                    data={chartData.pieData}
                                     cx={isMobile ? "50%" : "40%"}
                                     cy="50%"
                                     labelLine={false}
-                                    // Raio responsivo: um pouco menor no mobile para não cortar
                                     outerRadius={isMobile ? "65%" : "75%"}
                                     fill="#8884d8"
                                     dataKey="value"
@@ -285,9 +263,7 @@ const ReportView: React.FC<ReportViewProps> = ({ projects, allocations, theme, u
                                         const radius = innerRadius + (outerRadius - innerRadius) * 0.5;
                                         const x = cx + radius * Math.cos(-midAngle * Math.PI / 180);
                                         const y = cy + radius * Math.sin(-midAngle * Math.PI / 180);
-                                        
                                         const textColor = index >= 5 ? '#374151' : 'white';
-
                                         return percent > 0.05 ? (
                                             <text x={x} y={y} fill={textColor} textAnchor={x > cx ? 'start' : 'end'} dominantBaseline="central" fontSize={isMobile ? 10 : 12}>
                                                 {`${(percent * 100).toFixed(0)}%`}
@@ -295,17 +271,11 @@ const ReportView: React.FC<ReportViewProps> = ({ projects, allocations, theme, u
                                         ) : null;
                                     }}
                                 >
-                                    {chartData.clientData.map((entry, index) => (
+                                    {chartData.pieData.map((entry, index) => (
                                         <Cell key={`cell-${index}`} fill={COLORS[index % COLORS.length]} />
                                     ))}
                                 </Pie>
                                 <RechartsTooltip content={<CustomTooltip />} />
-                                {/* 
-                                    Lógica da Legenda Responsiva:
-                                    - Mobile: Vertical, Embaixo, Centralizado (Evita quebrar o layout horizontal)
-                                    - Desktop: Vertical, Direita, Meio (Como solicitado anteriormente)
-                                    - Cor: Preto (#000000) no modo claro, Cinza Claro (#d1d5db) no modo escuro.
-                                */}
                                 <Legend 
                                     layout={isMobile ? "horizontal" : "vertical"}
                                     verticalAlign={isMobile ? "bottom" : "middle"}
@@ -320,11 +290,8 @@ const ReportView: React.FC<ReportViewProps> = ({ projects, allocations, theme, u
                     </div>
                 </div>
 
-                {/* Gráfico de Barras - Ranking de Operações */}
-                {/* Adicionado pb-16 especificamente neste container */}
                 <div className="bg-white dark:bg-gray-800 p-4 rounded-lg shadow border border-gray-200 dark:border-gray-700 flex flex-col pb-16">
                     <h3 className="text-center font-bold text-gray-700 dark:text-gray-200 mb-4">Top 5 Operações (Horas)</h3>
-                    {/* Altura reduzida para 250px no mobile para ganhar espaço */}
                     <div className="h-[250px] md:h-[450px] w-full">
                         <ResponsiveContainer width="100%" height="100%">
                             <BarChart
@@ -337,14 +304,12 @@ const ReportView: React.FC<ReportViewProps> = ({ projects, allocations, theme, u
                                 <YAxis 
                                     type="category" 
                                     dataKey="name" 
-                                    // No mobile, reduzimos a largura do eixo Y para dar mais espaço às barras
                                     width={isMobile ? 100 : 180} 
-                                    // Cor do texto do eixo Y ajustada para preto no modo claro
                                     tick={{ fontSize: isMobile ? 9 : 11, fill: theme === 'dark' ? '#d1d5db' : '#000000' }} 
                                     interval={0}
                                 />
                                 <RechartsTooltip content={<CustomTooltip />} cursor={{fill: 'transparent'}} />
-                                <Bar dataKey="hours" radius={[0, 4, 4, 0]}>
+                                <Bar dataKey="value" radius={[0, 4, 4, 0]}>
                                     {chartData.topProjects.map((entry, index) => (
                                         <Cell key={`cell-${index}`} fill={COLORS[index % COLORS.length]} />
                                     ))}

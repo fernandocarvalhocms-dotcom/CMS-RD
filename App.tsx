@@ -138,7 +138,6 @@ const MainApp: React.FC<{ user: User; onLogout: () => void }> = ({ user, onLogou
             console.log(`[DELETE ALL] Resultado serviço: ${success}`);
             if (success) {
                 setProjects([]);
-                // Zera alocações na interface (opcional, dependendo do comportamento desejado)
                 setAllocations(prev => {
                     const cleaned: AllAllocations = {};
                     Object.keys(prev).forEach(key => {
@@ -186,7 +185,6 @@ const MainApp: React.FC<{ user: User; onLogout: () => void }> = ({ user, onLogou
         if (rows.length < 1) throw new Error("Arquivo vazio.");
         
         const importedProjects: Project[] = [];
-        // Itera a partir da linha 2 (index 1)
         for (let i = 1; i < rows.length; i++) {
             const row = rows[i];
             if (!row || row.length < 4) continue;
@@ -290,16 +288,21 @@ const MainApp: React.FC<{ user: User; onLogout: () => void }> = ({ user, onLogou
             setAllocations(prev => {
                 const updated: AllAllocations = {};
                 Object.keys(prev || {}).forEach(key => {
-                    if (key < startStr || key > endStr) updated[key] = prev[key];
+                    const dateObj = parse(key, 'yyyy-MM-dd', new Date());
+                    // Mantém apenas as datas que NÃO estão dentro do mês excluído
+                    if (!isWithinInterval(dateObj, { start, end })) {
+                        updated[key] = prev[key];
+                    }
                 });
                 return updated;
             });
             alert(`Apontamentos de ${monthName} removidos.`);
         } else {
-            alert("Falha no servidor.");
+            alert("Falha ao excluir no servidor.");
         }
     } catch (e) {
         console.error("[DELETE MONTH ERROR]", e);
+        alert("Erro ao processar exclusão.");
     } finally {
         setIsLoadingData(false);
     }
